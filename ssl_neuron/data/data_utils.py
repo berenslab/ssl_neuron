@@ -1,8 +1,9 @@
 import numpy as np
-import pandas as pd
 import networkx as nx
-from scipy.spatial.transform import Rotation as R
-from ssl_neuron.utils import neighbors_to_adjacency
+from ssl_neuron.utils import neighbors_to_adjacency, remap_neighbors
+
+# `pandas` and `scipy` are only needed by `rotate_cell` below (Allen-specific
+# preprocessing), so they are imported lazily there rather than at module load time.
 
 
 def connect_graph(adj_matrix, neighbors, features, verbose=False):
@@ -70,6 +71,9 @@ def rotate_cell(cell_id, morphology, df):
         morphology: AllenSDK morphology object
         df: pandas dataframe containing angles per neuron
     """
+    import pandas as pd
+    from scipy.spatial.transform import Rotation as R
+
     z_rot = df[df['specimen_id']==cell_id]['upright_angle'].values[0]
     rot1 = R.from_euler('z', z_rot, degrees=True).as_matrix()
     rot_list = list(rot1.flatten()) + [0, 0, 0]
@@ -109,7 +113,7 @@ def remove_axon(neighbors, features, soma_id):
     """
     # Get node indices corresponding to axon nodes.
     axon_mask = (features[:, 5] == 1)
-    axon_idcs = list(np.where(axon_mask)[0])
+    axon_idcs = set(np.where(axon_mask)[0].tolist())
 
     # Remove axon nodes from features.
     features = features[~axon_mask]
@@ -119,9 +123,7 @@ def remove_axon(neighbors, features, soma_id):
         del neighbors[key]
 
     for key in neighbors:
-        for n in list(neighbors[key]):
-            if n in axon_idcs:
-                neighbors[key].remove(n)
+        neighbors[key] -= axon_idcs
 
     # Re-map node indices to go from 0 .. M
     neighbors, old2new = remap_neighbors(neighbors)

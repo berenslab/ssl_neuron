@@ -1,9 +1,11 @@
-import torch
 import numpy as np
 import seaborn as sns
 import matplotlib.pylab as plt
 from collections import defaultdict
-from scipy.spatial.transform import Rotation as R
+
+# `torch` is only needed by the augmentation/dataset-side functions below (marked
+# accordingly) and is an optional dependency (see the `torch` extra in pyproject.toml),
+# so it is imported lazily inside those functions rather than at module load time.
 
     
 class AverageMeter(object):
@@ -34,6 +36,8 @@ def subsample_graph(neighbors=None, not_deleted=None, keep_nodes=200, protected=
         keep_nodes: number of nodes to keep in graph
         protected: nodes to be excluded from subsampling
     """
+    import torch
+
     if neighbors is not None:
         k_nodes = len(neighbors)
     else:
@@ -90,6 +94,8 @@ def rotate_graph(pos_matrix, axis=None):
     if axis is None:
         return pos_matrix
 
+    from scipy.spatial.transform import Rotation as R
+
     rotation_matrix = R.random().as_matrix()
     
     if axis == 'x':
@@ -123,6 +129,8 @@ def jitter_node_pos(node_positions, scale=1):
         node_positions: Matrix with xyz-node positions (N x 3).
         scale: Scale factor for jittering.
     """
+    import torch
+
     return node_positions + (torch.randn(*node_positions.shape).numpy() * scale)
 
 
@@ -134,6 +142,8 @@ def translate_soma_pos(node_positions, scale=1):
         node_positions: Matrix with xyz-node positions (N x 3).
         scale: Scale factor for jittering.
     """
+    import torch
+
     new_node_features = node_positions.copy()
     jitter = torch.randn(3).numpy() * scale
     new_node_features[:, :3] += jitter
@@ -143,6 +153,8 @@ def translate_soma_pos(node_positions, scale=1):
 def neighbors_to_adjacency_torch(neighbors, not_deleted):
     """ Create adjacency matrix from list of non-empty neighbors.
     """
+    import torch
+
     node_map = {n: i for i, n in enumerate(not_deleted)}
 
     n_nodes = len(not_deleted)
@@ -205,6 +217,8 @@ def compute_eig_lapl_torch_batch(adj_matrix, pos_enc_dim=32):
         adj_matrix: Adjacency matrix (B x N x N).
         pos_enc_dim: Output dimensions of positional encoding.
     """
+    import torch
+
     b, n, _ = adj_matrix.size()
     
     # Laplacian
@@ -282,6 +296,8 @@ def drop_random_branch(nodes, neighbors, distances, keep_nodes=200):
         distances: Dict of distances of nodes to origin
         keep_nodes: Number of nodes to keep in graph
     """
+    import torch
+
     start = list(nodes)[torch.randint(len(nodes), (1,)).item()]
     to = list(neighbors[start])[0]
 
