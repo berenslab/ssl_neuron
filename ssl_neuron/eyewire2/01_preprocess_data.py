@@ -37,6 +37,8 @@ import pickle
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
+import yaml
 import networkx as nx
 from tqdm import tqdm
 
@@ -70,10 +72,37 @@ except NameError:
 RAW_DIR = THIS_DIR.parents[2] / "data" / "morphologies-ew2" / "skel_final"
 OUT_DIR = THIS_DIR / "data"
 
+# Cell metadata (celltype labels) comes from the eyewire2-figures dataset config,
+# same one `plot_RGCs.ipynb` uses (see eyewire2-figures/data_config.yaml).
+DATA_CONFIG_PATH = THIS_DIR.parents[2] / "eyewire2-figures" / "data_config.yaml"
+
+# Start with a small subset instead of the full dataset: the alpha RGCs.
+# These are the only celltype_final labels containing "alpha" in the current
+# dataset -- there's no "ON transient alpha" type yet.
+CELLTYPES = ["ON alpha", "OFF sustained alpha", "OFF transient alpha"]
+
 VAL_FRACTION = 0.1
 SEED = 0
 
 assert RAW_DIR.is_dir(), f"Raw skeleton directory not found: {RAW_DIR}"
+
+
+def load_cell_ids(config_path, celltypes):
+    """ Load cell metadata (same dataframe `plot_RGCs.ipynb` uses) and return
+    the ids of cells whose `celltype_final` is in `celltypes`. """
+    with open(config_path) as f:
+        config = yaml.safe_load(f)
+
+    dataframes_dir = (config_path.parent / config["dataframes_dir"]).resolve()
+    file_path = dataframes_dir / f"{config['file_prefix']}{config['version']}.parquet"
+
+    df = pd.read_parquet(file_path, columns=["celltype_final"])
+    ids = df.index[df["celltype_final"].isin(celltypes)]
+    return {str(i) for i in ids}
+
+
+cell_id_filter = load_cell_ids(DATA_CONFIG_PATH, CELLTYPES)
+print(f"{len(cell_id_filter)} cells labeled {CELLTYPES}")
 
 
 # %% [markdown]
@@ -162,7 +191,9 @@ def find_swc_files(raw_dir):
 
 
 swc_files = find_swc_files(RAW_DIR)
-print(f"Found {len(swc_files)} skeletons under {RAW_DIR}")
+swc_files = {cell_id: path for cell_id, path in swc_files.items() if cell_id in cell_id_filter}
+print(f"Found {len(swc_files)} / {len(cell_id_filter)} labeled skeletons under {RAW_DIR}")
+assert swc_files, "None of the labeled cells have a skeleton under RAW_DIR"
 
 
 # %% [markdown]
