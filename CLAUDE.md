@@ -12,7 +12,7 @@ The `ssl_neuron/eyewire2/` subfolder adapts the original Allen Brain Atlas (ABA)
 
 - Packaged with `uv`/`pyproject.toml` (hatchling backend), not the legacy `setup.py` the README still mentions.
 - Base install (`uv sync`) only needs `numpy`, `tqdm`, `seaborn`, `matplotlib`, `networkx` — enough to preprocess/visualize data on any machine (including Windows), no GPU or `torch` required.
-- The `torch` optional-dependency group (`uv sync --extra torch`) adds `torch==1.13.1`, `torchvision==0.14.1`, `scikit-learn==0.24.1`, `scipy` — required for anything that actually builds/trains/runs the model (`datasets.py`'s augmentation functions, `graphdino.py`, `train.py`). `torch==1.13.1` has no Windows wheels, so install this extra only on Linux/the cluster.
+- The `torch` optional-dependency group (`uv sync --extra torch`) adds `torch>=2.3`, `torchvision>=0.18`, `scikit-learn>=1.4`, `scipy` — required for anything that actually builds/trains/runs the model (`datasets.py`'s augmentation functions, `graphdino.py`, `train.py`).
 - `ssl_neuron/utils.py` and `ssl_neuron/data/data_utils.py` import `torch`/`scipy`/`pandas` lazily inside individual functions specifically so the rest of the module (plotting, graph utilities used by preprocessing) stays importable without those deps.
 - Allen-specific preprocessing (`extract_allen_data.ipynb`) additionally needs `allensdk` + `pandas`; deliberately *not* declared as a pyproject extra because allensdk's old pins (e.g. `matplotlib<3.5`) would drag those versions into the single shared `uv.lock` used by every extra. Install ad hoc: `uv pip install allensdk pandas`.
 - No test suite, linter, or CI config exists in this repo.

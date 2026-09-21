@@ -26,11 +26,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# GPU training/inference stack (torch==1.13.1 has no Windows wheels; install on Linux/the cluster).
+# GPU training/inference stack.
 torch = [
-    "torch==1.13.1",
-    "torchvision==0.14.1",
-    "scikit-learn==0.24.1",
+    "torch>=2.3",
+    "torchvision>=0.18",
+    "scikit-learn>=1.4",
     "scipy",
 ]
 # Note: the original Allen Cell Types Database preprocessing (extract_allen_data.ipynb)
