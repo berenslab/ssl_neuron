@@ -5,11 +5,11 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.16.0
+#       jupytext_version: 1.19.4
 #   kernelspec:
 #     display_name: ssl_neuron
 #     language: python
-#     name: python3
+#     name: ssl_neuron
 # ---
 
 # %% [markdown]
@@ -68,13 +68,11 @@ try:
 except NameError:
     THIS_DIR = Path.cwd()
 
-# Adjust RAW_DIR for the machine this runs on (e.g. the cluster's own skeleton store).
-RAW_DIR = THIS_DIR.parents[2] / "data" / "morphologies-ew2" / "skel_final"
 OUT_DIR = THIS_DIR / "data"
 
-# Cell metadata (celltype labels) comes from the eyewire2-figures dataset config,
-# same one `plot_RGCs.ipynb` uses (see eyewire2-figures/data_config.yaml).
-DATA_CONFIG_PATH = THIS_DIR.parents[2] / "eyewire2-figures" / "data_config.yaml"
+# Adjust SWC_DIR for the machine this runs on (e.g. the cluster's own skeleton store).
+SWC_DIR = Path("/gpfs01/berens/data/data/Eyewire2/morphologies-ew2/skel_final/ad494f8b7ec74a8c93bc1e81af36499a/197572403d25843e47aacdafefbf1fed//")
+DF_PATH = Path("/gpfs01/berens/data/data/Eyewire2/huggingface/eyewire2-data/data-em/dataframes/df_all_neurons_2026-09-16-15h.parquet")
 
 # Start with a small subset instead of the full dataset: the alpha RGCs.
 # These are the only celltype_final labels containing "alpha" in the current
@@ -84,17 +82,12 @@ CELLTYPES = ["ON alpha", "OFF sustained alpha", "OFF transient alpha"]
 VAL_FRACTION = 0.1
 SEED = 0
 
-assert RAW_DIR.is_dir(), f"Raw skeleton directory not found: {RAW_DIR}"
 
-
-def load_cell_ids(config_path, celltypes):
+def load_cell_ids(config_path, celltypes, file_path=DF_PATH):
     """ Load cell metadata (same dataframe `plot_RGCs.ipynb` uses) and return
     the ids of cells whose `celltype_final` is in `celltypes`. """
     with open(config_path) as f:
         config = yaml.safe_load(f)
-
-    dataframes_dir = (config_path.parent / config["dataframes_dir"]).resolve()
-    file_path = dataframes_dir / f"{config['file_prefix']}{config['version']}.parquet"
 
     df = pd.read_parquet(file_path, columns=["celltype_final"])
     ids = df.index[df["celltype_final"].isin(celltypes)]
@@ -179,9 +172,9 @@ def move_to_front(idx, features, neighbors):
 # but it's kept around in case it's useful later (e.g. for filtering).
 
 # %%
-def find_swc_files(raw_dir):
+def find_swc_files(SWC_DIR):
     files = {}
-    for path in sorted(raw_dir.rglob("*.swc")):
+    for path in sorted(SWC_DIR.rglob("*.swc")):
         if path.stem.endswith("_cal"):
             continue
         cell_id = path.stem
@@ -190,10 +183,10 @@ def find_swc_files(raw_dir):
     return files
 
 
-swc_files = find_swc_files(RAW_DIR)
+swc_files = find_swc_files(SWC_DIR)
 swc_files = {cell_id: path for cell_id, path in swc_files.items() if cell_id in cell_id_filter}
-print(f"Found {len(swc_files)} / {len(cell_id_filter)} labeled skeletons under {RAW_DIR}")
-assert swc_files, "None of the labeled cells have a skeleton under RAW_DIR"
+print(f"Found {len(swc_files)} / {len(cell_id_filter)} labeled skeletons under {SWC_DIR}")
+assert swc_files, "None of the labeled cells have a skeleton under SWC_DIR"
 
 
 # %% [markdown]
@@ -267,3 +260,7 @@ np.save(OUT_DIR / "train_ids.npy", train_ids)
 np.save(OUT_DIR / "val_ids.npy", val_ids)
 
 print(f"{len(train_ids)} train / {len(val_ids)} val skeletons written to {OUT_DIR}")
+
+# %%
+
+# %%

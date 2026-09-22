@@ -5,11 +5,11 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.16.0
+#       jupytext_version: 1.19.4
 #   kernelspec:
 #     display_name: ssl_neuron
 #     language: python
-#     name: python3
+#     name: ssl_neuron
 # ---
 
 # %% [markdown]
@@ -67,3 +67,7 @@ dataloaders = build_dataloader(config)
 # %%
 trainer = Trainer(config, model, dataloaders)
 trainer.train()
+
+# %%
+
+# %%

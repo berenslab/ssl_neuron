@@ -23,6 +23,9 @@ dependencies = [
     "seaborn",
     "matplotlib",
     "networkx",
+    "jupyterlab>=4.6.3",
+    "ipykernel>=7.3.0",
+    "fastparquet>=2026.5.0",
 ]
 
 [project.optional-dependencies]

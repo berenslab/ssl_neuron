@@ -5,11 +5,11 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.16.0
+#       jupytext_version: 1.19.4
 #   kernelspec:
 #     display_name: ssl_neuron
 #     language: python
-#     name: python3
+#     name: ssl_neuron
 # ---
 
 # %% [markdown]
@@ -164,3 +164,5 @@ within_sim = sim[same_cell].mean()
 across_sim = sim[~same_cell].mean()
 print(f"Mean cosine similarity within the same cell:    {within_sim:.3f}")
 print(f"Mean cosine similarity across different cells:  {across_sim:.3f}")
+
+# %%
