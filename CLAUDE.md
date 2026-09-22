@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 SSL-Neuron / GraphDINO: self-supervised graph representation learning for neuronal morphologies (skeleton graphs), from Weis et al. 2023 ("Self-Supervised Graph Representation Learning for Neuronal Morphologies", TMLR). GraphDINO is a graph-transformer trained with a DINO-style student/teacher self-distillation objective on augmented views of the same neuron skeleton.
 
-The `ssl_neuron/eyewire2/` subfolder adapts the original Allen Brain Atlas (ABA) pipeline to eyewire2 retina skeletons produced by the sibling `skeliner` repo.
+The `ssl_neuron/eyewire2/` subfolder adapts the original Allen Brain Atlas (ABA) pipeline to eyewire2 retina skeletons produced by the sibling `skeliner` repo. **`ssl_neuron/eyewire2/00_dataset_spec.md` is the authority for that adaptation** — what makes retinal ganglion cells different from ABA cortical cells, which augmentations are therefore legal, and which stock behaviors had to be replaced. Read it before changing anything in that folder; several of the defaults there look arbitrary but are load-bearing.
 
 ## Environment & packaging
 
@@ -25,15 +25,24 @@ python3 ssl_neuron/main.py --config=ssl_neuron/configs/config.json
 ```
 
 Eyewire2 retina pipeline (`ssl_neuron/eyewire2/`, run in this numbered order) — these are jupytext "percent"-format `.py` files (open directly as notebooks in Jupyter, or run as plain scripts):
-1. `01_preprocess_data.py` — converts skeliner's `.swc` skeletons into the `features.npy`/`neighbors.pkl` layout `GraphDataset` expects; only needs numpy/networkx/matplotlib, no `torch`, so it runs locally on Windows. `RAW_DIR` is hardcoded relative to this file's location and must be adjusted per machine (e.g. pointed at the cluster's own skeleton store) before rerunning there.
-2. `02_visualize_data.py` — sanity-checks preprocessed output (node-count distribution, per-axis extent to pick `rotation_axis`, example plots); also torch-free.
-3. `03_train_graphdino.py` — actually trains GraphDINO; needs the `torch` extra and a GPU, run on the cluster only.
+1. `01_preprocess_data.py` — converts skeliner's `.swc` skeletons into the `features.npy`/`neighbors.pkl` layout `GraphDataset` expects (pure functions live in `eyewire2/preprocessing.py`); torch-free, runs locally on Windows. `SWC_DIR` and `DF_PATH` are hardcoded cluster paths and must be adjusted per machine. Also writes a `cell_meta.csv` sidecar: absolute soma positions (for the later mosaic stage, unrecoverable afterwards) and celltype labels (for evaluation only — training is fully self-supervised).
+2. `02_visualize_data.py` — sanity checks, plus the measurements that settle the spec's open items; also torch-free. Warns if the skeletons on disk still have soma-centered z, i.e. were written by a pre-spec version of `01`.
+3. `03_train_graphdino.py` — actually trains GraphDINO, via `RetinaGraphDataset`; needs the `torch` extra and a GPU, run on the cluster only.
+4. `04_visualize_results.py` — loads the latest checkpoint and inspects the embedding.
 
 Checkpoints are written to the directory in `config['trainer']['ckpt_dir']`.
 
 ## Architecture
 
 **Data pipeline** (`ssl_neuron/datasets.py`, `GraphDataset`): loads each cell's `features.npy` (node xyz, N x 3+) and `neighbors.pkl` (dict: node id -> set of neighbor ids) from `<data.path>/skeletons/<cell_id>/`, keyed by `train_ids.npy`/`val_ids.npy`. Assumes soma is node 0, node positions are in microns, y-axis orthogonal to pia, and axons already removed. On `__getitem__`, produces **two independently augmented views** of the same graph — this pair is the self-supervised signal DINO trains on. Augmentation = random subgraph deletion (`drop_random_branch`, `n_drop_branch` times) + subsampling down to `n_nodes` (`subsample_graph`, which iteratively removes degree-<3 non-protected nodes) + 3D rotation/jitter/translation of node positions (`ssl_neuron/utils.py`). The soma node is always protected from removal.
+
+**Eyewire2 retina adaptation** (`ssl_neuron/eyewire2/`): `dataset.py`'s `RetinaGraphDataset` subclasses `GraphDataset` and overrides *only* `_augment_node_position`, swapping in `augment.py` (pure numpy, importable without `torch`). Two things differ from the ABA assumptions and will silently ruin a run if ignored:
+- **Skeletons are soma-centered in x and y only.** z stays in the shared warped IPL-depth frame, because stratification depth is the main celltype signal and is only meaningful relative to the IPL. So no z-translation (`augment_positions` raises on one), no z-flip, no z-scaling.
+- **`rotate_graph(axis='z')` in `utils.py` is not a rotation.** It zeroes the z row/column of a random 3D rotation; the remaining 2x2 xy block is not orthogonal, so it shears and rescales the arbor (median area factor 0.50). Fine-ish for ABA, fatal here where arbor size is a feature. The retina path uses a proper SO(2) rotation instead; the stock function is untouched and still used by ABA.
+
+`datasets.py` was made config-driven for this: `jitter_var`/`rotation_axis`/`translate_var` are now optional (the retina config replaces them with an `augment` block), the load-time node cap is the `cache_nodes` key instead of a hardcoded 1000, and `build_dataloader` takes a `dataset_cls`. All defaults preserve the ABA behavior.
+
+Unresolved decisions are tracked in section 7 of the spec — notably whether the warped z is in microns or percent-IPL-depth, which sets the z-jitter magnitude. `02_visualize_data.py` prints what is needed to settle them.
 
 **Preprocessing utilities** (`ssl_neuron/utils.py`, `ssl_neuron/data/data_utils.py`): graph algorithms shared by both preprocessing (building `features.npy`/`neighbors.pkl` from raw skeletons) and augmentation (during training) — `neighbors_to_adjacency`/`neighbors_to_adjacency_torch`, `remap_neighbors` (reindex node ids to `0..N`), `connect_graph` (stitch disconnected components by nearest-node distance), `remove_axon` (strip axon-typed nodes using the one-hot compartment encoding in feature columns 4-7), `get_leaf_branch_nodes`/`compute_node_distances`/`drop_random_branch`/`traverse_dir` (branch-level graph surgery), `compute_eig_lapl_torch_batch` (graph Laplacian eigenvector positional encoding, batched).
 

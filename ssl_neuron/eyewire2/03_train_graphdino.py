@@ -22,12 +22,26 @@
 # First run `01_preprocess_data.py` there too, pointed at the cluster's own
 # (larger) skeleton directory, to populate `./data/skeletons`,
 # `./data/train_ids.npy` and `./data/val_ids.npy`.
+#
+# This uses `RetinaGraphDataset` rather than the stock `GraphDataset`: the
+# graph augmentations are identical, but the position augmentations follow the
+# retina policy in `00_dataset_spec.md` (xy rotation and mirroring, no
+# z-translation, bounded z-jitter).
+#
+# Two things to watch on the first run:
+#
+# * **Stale data.** Skeletons preprocessed before the xy-only centering fix
+#   have soma-centered z, which silently destroys the depth signal. Run
+#   `02_visualize_data.py` first -- it warns if every soma sits at z = 0.
+# * **Memory.** `n_nodes` is 512 (was 200) and attention is O(n²), so a step
+#   costs ~6.5x what it used to. If this OOMs, drop `batch_size` before
+#   dropping `n_nodes`.
 
 # %%
 import json
 from pathlib import Path
 
-from ssl_neuron.datasets import build_dataloader
+from ssl_neuron.eyewire2.dataset import build_dataloader
 from ssl_neuron.graphdino import create_model
 from ssl_neuron.train import Trainer
 
@@ -61,13 +75,17 @@ model.cuda()
 # %%
 dataloaders = build_dataloader(config)
 
+train_loader, val_loader = dataloaders
+print(f"{len(train_loader.dataset)} train / {len(val_loader.dataset)} val cells, "
+      f"{len(train_loader)} iterations per epoch")
+print(f"max_iter={config['optimizer']['max_iter']} "
+      f"(~{config['optimizer']['max_iter'] // max(len(train_loader), 1)} epochs)")
+
 # %% [markdown]
 # #### Run training
 
 # %%
 trainer = Trainer(config, model, dataloaders)
 trainer.train()
-
-# %%
 
 # %%

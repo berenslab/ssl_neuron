@@ -12,14 +12,19 @@
     "data": {
         "class": "eyewire2",
         "path": "./data",
-        "n_nodes": 200,
+        "n_nodes": 512,
+        "cache_nodes": 2048,
         "feat_dim": 3,
         "batch_size": 16,
         "num_workers": 4,
-        "jitter_var": 1,
-        "translate_var": 10,
-        "rotation_axis": "z",
-        "n_drop_branch": 10
+        "n_drop_branch": 5,
+        "augment": {
+            "rotate_xy": true,
+            "mirror_xy": true,
+            "scale_xy": 0.05,
+            "jitter": [1.0, 1.0, 0.4],
+            "translate": [10.0, 10.0, 0.0]
+        }
     },
     "optimizer": {
         "lr": 0.0001,

@@ -24,11 +24,12 @@ class GraphDataset(Dataset):
         data_path = config['data']['path']
 
         # Augmentation parameters.
-        self.jitter_var = config['data']['jitter_var']
-        self.rotation_axis = config['data']['rotation_axis']
+        self.jitter_var = config['data'].get('jitter_var', 1)
+        self.rotation_axis = config['data'].get('rotation_axis', None)
         self.n_drop_branch = config['data']['n_drop_branch']
-        self.translate_var = config['data']['translate_var']
+        self.translate_var = config['data'].get('translate_var', 1)
         self.n_nodes = config['data']['n_nodes']
+        self.cache_nodes = config['data'].get('cache_nodes', 1000)
 
         # Load cell ids.
         cell_ids = list(np.load(Path(data_path, f'{mode}_ids.npy')))
@@ -52,9 +53,9 @@ class GraphDataset(Dataset):
                 # Subsample graphs for faster processing during training.
                 neighbors, not_deleted = subsample_graph(neighbors=neighbors, 
                                                          not_deleted=set(range(len(neighbors))), 
-                                                         keep_nodes=1000, 
+                                                         keep_nodes=self.cache_nodes, 
                                                          protected=[soma_id])
-                # Remap neighbor indices to 0..999.
+                # Remap neighbor indices to 0..cache_nodes.
                 neighbors, subsampled2new = remap_neighbors(neighbors)
                 soma_id = subsampled2new[soma_id]
 
@@ -163,18 +164,18 @@ class GraphDataset(Dataset):
         return features1, features2, adj_matrix1, adj_matrix2
     
 
-def build_dataloader(config, use_cuda=torch.cuda.is_available()):
+def build_dataloader(config, use_cuda=torch.cuda.is_available(), dataset_cls=GraphDataset):
 
     kwargs = {'num_workers':config['data']['num_workers'], 'pin_memory':True, 'persistent_workers': True} if use_cuda else {}
 
     train_loader = DataLoader(
-            GraphDataset(config, mode='train'),
+            dataset_cls(config, mode='train'),
             batch_size=config['data']['batch_size'], 
             shuffle=True, 
             drop_last=True,
             **kwargs)
 
-    val_dataset = GraphDataset(config, mode='val')
+    val_dataset = dataset_cls(config, mode='val')
     batch_size = val_dataset.num_samples if val_dataset.__len__() < config['data']['batch_size'] else config['data']['batch_size']
     val_loader = DataLoader(
             val_dataset,
