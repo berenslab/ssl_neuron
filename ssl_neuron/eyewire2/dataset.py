@@ -7,7 +7,7 @@ replaced, because the stock ones are wrong for this dataset -- see
 """
 import numpy as np
 
-from ssl_neuron.datasets import GraphDataset, build_dataloader as _build_dataloader
+from ssl_neuron.datasets import GraphDataset, GraphImageDataset, build_dataloader as _build_dataloader
 from ssl_neuron.eyewire2.augment import augment_positions
 
 
@@ -40,3 +40,15 @@ class RetinaGraphDataset(GraphDataset):
 def build_dataloader(config, **kwargs):
     """ Same as `ssl_neuron.datasets.build_dataloader`, with the retina dataset. """
     return _build_dataloader(config, dataset_cls=RetinaGraphDataset, **kwargs)
+
+
+class RetinaGraphImageDataset(GraphImageDataset, RetinaGraphDataset):
+    """ `RetinaGraphDataset` plus one canonical 2D projection per cell, for
+    GICLMorph. The graph views are augmented exactly as for GraphDINO; the
+    projection is never augmented (the paper draws one of the fixed PCA-guided
+    views, and that choice is the only variation). """
+
+
+def build_giclmorph_dataloader(config, **kwargs):
+    """ Same as `build_dataloader`, with projections attached to every item. """
+    return _build_dataloader(config, dataset_cls=RetinaGraphImageDataset, **kwargs)

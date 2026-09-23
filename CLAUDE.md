@@ -8,6 +8,8 @@ SSL-Neuron / GraphDINO: self-supervised graph representation learning for neuron
 
 The `ssl_neuron/eyewire2/` subfolder adapts the original Allen Brain Atlas (ABA) pipeline to eyewire2 retina skeletons produced by the sibling `skeliner` repo. **`ssl_neuron/eyewire2/00_dataset_spec.md` is the authority for that adaptation** — what makes retinal ganglion cells different from ABA cortical cells, which augmentations are therefore legal, and which stock behaviors had to be replaced. Read it before changing anything in that folder; several of the defaults there look arbitrary but are load-bearing.
 
+The repo also carries **GICLMorph** (Hao et al. 2026, reimplemented from the paper — no official code exists): GraphDINO plus a ResNet branch on PCA-guided 2D projections, aligned by a cross-modal InfoNCE loss. It wraps an unchanged `GraphDINO`, so `giclmorph.cmid_weight = 0` *is* GraphDINO. **`ssl_neuron/eyewire2/00_giclmorph_spec.md` is the authority for it** — especially §2: the paper's 3D-PCA projection is replaced on RGCs by depth-anchored views (`projection.retina_views`), because on a flat arbor PC1/PC2 lie in xy and the paper's views never show depth.
+
 ## Environment & packaging
 
 - Packaged with `uv`/`pyproject.toml` (hatchling backend), not the legacy `setup.py` the README still mentions.
@@ -29,6 +31,13 @@ Eyewire2 retina pipeline (`ssl_neuron/eyewire2/`, run in this numbered order) �
 2. `02_visualize_data.py` — sanity checks, plus the measurements that settle the spec's open items; also torch-free. Warns if the skeletons on disk still have soma-centered z, i.e. were written by a pre-spec version of `01`.
 3. `03_train_graphdino.py` — actually trains GraphDINO, via `RetinaGraphDataset`; needs the `torch` extra and a GPU, run on the cluster only.
 4. `04_visualize_results.py` — loads the latest checkpoint and inspects the embedding.
+5. `05_render_projections.py` — GICLMorph only: renders each cell's canonical 2D views into `skeletons/<cell_id>/projections.npy`; torch-free.
+6. `06_train_giclmorph.py` — trains GICLMorph (`config_giclmorph.json`, `GICLTrainer`); GPU. With `cmid_weight: 0` it is the like-for-like GraphDINO control.
+7. `07_evaluate_embeddings.py` — k-NN / linear-probe / clustering scores on celltype for every GraphDINO and GICLMorph run found, plus a no-learning depth-profile baseline.
+
+`05`–`07` read the `GICLMORPH_CONFIG`, `GICLMORPH_DATA`, `GICLMORPH_CKPTS` environment variables to override their paths.
+
+On Windows, running `03`/`06`/`07` as plain scripts hangs in `GraphDataset.__init__`: its `multiprocessing.Manager()` is started under the `spawn` start method, the manager child fails to bootstrap from the unguarded script, and the parent waits forever. The scripts are meant for the Linux cluster (`fork`) or Jupyter, where this does not happen.
 
 Checkpoints are written to the directory in `config['trainer']['ckpt_dir']`.
 

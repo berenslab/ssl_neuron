@@ -162,7 +162,46 @@ class GraphDataset(Dataset):
         features2, adj_matrix2 = self._augment(cell)
 
         return features1, features2, adj_matrix1, adj_matrix2
-    
+
+
+class GraphImageDataset(GraphDataset):
+    """ `GraphDataset` that also yields one 2D projection per cell, for GICLMorph.
+
+    Projections are read from `<data.path>/skeletons/<cell_id>/projections.npy`,
+    a (V x H x W) uint8 stack of canonical views (`ssl_neuron.projection`,
+    written e.g. by `eyewire2/05_render_projections.py`). Each item draws one of
+    the V views uniformly and returns it as a (1 x H x W) uint8 tensor after the
+    usual two graph views. Views are memory-mapped, not cached, so the
+    dataset's footprint stays that of `GraphDataset`.
+
+    Written as a cooperative subclass so it composes with dataset subclasses
+    that replace the augmentations, e.g.
+    `class RetinaGraphImageDataset(GraphImageDataset, RetinaGraphDataset)`.
+    """
+    def __init__(self, config, mode='train', inference=False):
+        super().__init__(config, mode=mode, inference=inference)
+        self.skeleton_dir = Path(config['data']['path'], 'skeletons')
+
+        missing = [cell['cell_id'] for cell in self.cells.values()
+                   if not self._projection_path(cell['cell_id']).exists()]
+        if missing:
+            raise FileNotFoundError(
+                f'{len(missing)} of {self.num_samples} {mode} cells have no projections.npy '
+                f'(e.g. {self._projection_path(missing[0])}). Render them first.')
+
+    def _projection_path(self, cell_id):
+        return self.skeleton_dir / str(cell_id) / 'projections.npy'
+
+    def _random_projection(self, cell_id):
+        views = np.load(self._projection_path(cell_id), mmap_mode='r')
+        k = torch.randint(len(views), (1,)).item()
+        return torch.from_numpy(np.array(views[k]))[None]
+
+    def __getitem__(self, index):
+        features1, features2, adj_matrix1, adj_matrix2 = super().__getitem__(index)
+        image = self._random_projection(self.cells[index]['cell_id'])
+        return features1, features2, adj_matrix1, adj_matrix2, image
+
 
 def build_dataloader(config, use_cuda=torch.cuda.is_available(), dataset_cls=GraphDataset):
 

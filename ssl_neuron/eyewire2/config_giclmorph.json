@@ -1,0 +1,66 @@
+{
+    "model": {
+        "num_classes": 1000,
+        "dim": 32,
+        "depth": 7,
+        "n_head": 8,
+        "pos_dim": 32,
+        "move_avg": 0.999,
+        "center_avg": 0.9,
+        "teacher_temp": 0.06
+    },
+    "giclmorph": {
+        "cmid_weight": 0.4,
+        "cmid_temp": 0.1,
+        "cmid_graph_input": "proj",
+        "shared_dim": 128,
+        "image_backbone": "resnet50",
+        "image_pretrained": false,
+        "image_head_hidden": 512
+    },
+    "projection": {
+        "mode": "retina",
+        "n_views": 6,
+        "en_face": true,
+        "spacing": 0.5,
+        "image_size": 224,
+        "max_count": 128,
+        "xy_half_extent": null,
+        "z_range": null
+    },
+    "data": {
+        "class": "eyewire2",
+        "path": "./data",
+        "n_nodes": 512,
+        "cache_nodes": 2048,
+        "feat_dim": 3,
+        "batch_size": 16,
+        "num_workers": 4,
+        "n_drop_branch": 5,
+        "augment": {
+            "rotate_xy": true,
+            "mirror_xy": true,
+            "scale_xy": 0.05,
+            "jitter": [1.0, 1.0, 0.4],
+            "translate": [10.0, 10.0, 0.0]
+        }
+    },
+    "optimizer": {
+        "name": "adamw",
+        "lr": 0.0001,
+        "weight_decay": 0.01,
+        "max_iter": 100000,
+        "exp_decay": 0.5
+    },
+    "trainer": {
+        "ckpt_dir": "./ckpts_giclmorph",
+        "save_ckpt_every": 50,
+        "seed": null
+    },
+    "evaluation": {
+        "n_eval_views": 5,
+        "knn_k": 5,
+        "min_cells_per_class": 5,
+        "label_column": "celltype_final"
+    }
+}

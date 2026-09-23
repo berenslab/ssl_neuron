@@ -259,7 +259,11 @@ class GraphDINO(nn.Module):
         new_teacher_centers = self.teacher_centering_ema_updater.update_average(self.teacher_centers, self.previous_centers)
         self.teacher_centers.copy_(new_teacher_centers)
 
-    def forward(self, node_feat1, node_feat2, adj1, adj2, lapl1, lapl2):
+    def forward(self, node_feat1, node_feat2, adj1, adj2, lapl1, lapl2, return_student=False):
+        """ DINO loss of two views. With `return_student=True`, also returns the
+        student's CLS embeddings and projections of both views, as
+        `(loss, (emb1, emb2), (proj1, proj2))`, so that a wrapper (GICLMorph)
+        can add its own loss without running the student a second time. """
         batch_size = node_feat1.shape[0]
 
         # Concatenate the two views to compute embeddings as one batch.
@@ -267,7 +271,7 @@ class GraphDINO(nn.Module):
         adj = torch.cat([adj1, adj2], dim=0)
         lapl = torch.cat([lapl1, lapl2], dim=0)
 
-        _, student_proj = self.student_encoder(node_feat, adj, lapl)
+        student_emb, student_proj = self.student_encoder(node_feat, adj, lapl)
         student_proj1, student_proj2 = torch.split(student_proj, batch_size, dim=0)
 
         with torch.no_grad():
@@ -281,6 +285,10 @@ class GraphDINO(nn.Module):
         loss2 = self.compute_loss(teacher_proj2, student_proj1)
         loss = (loss1 + loss2) / 2
 
+        if return_student:
+            return (loss,
+                    torch.split(student_emb, batch_size, dim=0),
+                    (student_proj1, student_proj2))
         return loss
 
 
