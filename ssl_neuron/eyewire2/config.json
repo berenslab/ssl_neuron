@@ -1,4 +1,17 @@
 {
+    "paths": {
+        "swc_dir": [
+            "/gpfs01/berens/data/data/Eyewire2/morphologies-ew2/skel_final/ad494f8b7ec74a8c93bc1e81af36499a/197572403d25843e47aacdafefbf1fed",
+            "C:/Users/joesterle/github/eyewire2/data/morphologies-ew2/skel_final/ad494f8b7ec74a8c93bc1e81af36499a/197572403d25843e47aacdafefbf1fed"
+        ],
+        "dataframe": [
+            "/gpfs01/berens/data/data/Eyewire2/huggingface/eyewire2-data/data-em/dataframes/df_all_neurons_2026-09-16-15h.parquet",
+            "C:/Users/joesterle/github/eyewire2/huggingface/eyewire2-data/data-em/dataframes/df_all_neurons_2026-09-16-15h.parquet"
+        ]
+    },
+    "preprocessing": {
+        "cellclass": "RGC"
+    },
     "model": {
         "num_classes": 1000,
         "dim": 32,

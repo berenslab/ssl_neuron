@@ -36,13 +36,14 @@
 # (for the later mosaic stage) and its celltype label (for evaluation).
 #
 # Only needs numpy/pandas/matplotlib -- no `torch` -- so it runs locally on
-# Windows. Re-run it on the cluster (pointed at the cluster's skeleton
-# directory) before training there.
+# Windows. Re-run it on the cluster (it picks the cluster paths from
+# `config.json` automatically) before training there.
 #
 # > **Note:** skeletons written before the xy-only centering change have
 # > soma-centered z and must be regenerated.
 
 # %%
+import json
 import pickle
 import re
 from collections import Counter
@@ -58,6 +59,12 @@ from ssl_neuron.eyewire2.preprocessing import MIN_NODES, SkeletonQCError, prepro
 
 # %% [markdown]
 # #### Config
+#
+# `config.json` lists the cluster path first and the local one second for both
+# inputs; the first that exists wins, so the same file works in both places.
+# `preprocessing.cellclass` selects the cells (spec section 3): `"RGC"` for real
+# runs, `null` for every cellclass -- only useful as a local smoke test, since
+# the ~110 skeletons mirrored outside the cluster are mostly amacrine cells.
 
 # %%
 try:
@@ -67,9 +74,22 @@ except NameError:
 
 OUT_DIR = THIS_DIR / "data"
 
-# Adjust for the machine this runs on (e.g. the cluster's own skeleton store).
-SWC_DIR = Path("/gpfs01/berens/data/data/Eyewire2/morphologies-ew2/skel_final/ad494f8b7ec74a8c93bc1e81af36499a/197572403d25843e47aacdafefbf1fed//")
-DF_PATH = Path("/gpfs01/berens/data/data/Eyewire2/huggingface/eyewire2-data/data-em/dataframes/df_all_neurons_2026-09-16-15h.parquet")
+with open(THIS_DIR / "config.json") as f:
+    config = json.load(f)
+
+
+def first_existing(candidates, what):
+    for candidate in candidates:
+        if Path(candidate).exists():
+            return Path(candidate)
+    raise FileNotFoundError(f"None of the configured {what} paths exist: {candidates}")
+
+
+SWC_DIR = first_existing(config["paths"]["swc_dir"], "swc_dir")
+DF_PATH = first_existing(config["paths"]["dataframe"], "dataframe")
+CELLCLASS = config["preprocessing"]["cellclass"]
+print(f"skeletons:  {SWC_DIR}")
+print(f"dataframe:  {DF_PATH}")
 
 VAL_FRACTION = 0.1
 SEED = 0
@@ -99,20 +119,23 @@ def load_metadata(path, columns=META_COLUMNS):
         return df[[c for c in columns if c in df.columns]]
 
 
-def select_training_cells(df):
-    """ The SSL training set: every confidently-labeled RGC, typed or not
-    (spec section 3). Labels are not used for training, so there is no reason
-    to restrict this to cells that already have a celltype. """
-    selected = df["cellclass_final"] == "RGC"
+def select_training_cells(df, cellclass="RGC"):
+    """ The SSL training set: every confidently-labeled cell of `cellclass`,
+    typed or not (spec section 3). Labels are not used for training, so there is
+    no reason to restrict this to cells that already have a celltype.
+    `cellclass=None` keeps every class. """
+    selected = pd.Series(True, index=df.index)
+    if cellclass is not None:
+        selected &= df["cellclass_final"] == cellclass
     for flag in ("valid_cellclass_final", "valid_status"):
         if flag in df.columns:
             selected &= df[flag].fillna(False).astype(bool)
     return df[selected]
 
 
-df_meta = select_training_cells(load_metadata(DF_PATH))
+df_meta = select_training_cells(load_metadata(DF_PATH), CELLCLASS)
 cell_id_filter = {str(i) for i in df_meta.index}
-print(f"{len(cell_id_filter)} RGCs selected from {DF_PATH.name}")
+print(f"{len(cell_id_filter)} {CELLCLASS or 'cells of any class'} selected from {DF_PATH.name}")
 if "celltype_final" in df_meta.columns:
     n_typed = int(df_meta["celltype_final"].notna().sum())
     print(f"  of which {n_typed} carry a celltype label (evaluation subset)")
@@ -231,21 +254,43 @@ plt.show()
 # %% [markdown]
 # #### Train / val split
 #
-# A plain random split: the validation set only produces a DINO loss curve
-# (there are no labels in the objective), and all cells are re-embedded for
-# evaluation in `04_visualize_results.py` anyway.
+# For training, the validation set only produces a DINO loss curve (there are
+# no labels in the objective). But `07_evaluate_embeddings.py` uses the labeled
+# cells of `val_ids` as its k-NN queries, and with ~28 celltypes a plain random
+# 10% leaves many classes with 0-3 queries (`00_giclmorph_spec.md` section
+# 7.6). So the split is stratified by celltype, with the unlabeled cells as one
+# more stratum: every class gets its `VAL_FRACTION` share of val cells, and the
+# unlabeled cells are split as a random split would.
 
 # %%
-rng = np.random.default_rng(SEED)
-ids = df_cells.index.to_numpy().astype(str)
-rng.shuffle(ids)
+def stratified_split(strata, val_fraction, seed):
+    """ Systematic stratified sample: each stratum contributes its
+    `val_fraction` share of val cells, rounded up or down at random, while the
+    total stays exactly `round(N * val_fraction)` (at least 1). Plain per-stratum
+    rounding would instead give every stratum below 1 / val_fraction cells no
+    val cell at all. """
+    rng = np.random.default_rng(seed)
+    ids = strata.index.to_numpy().astype(str)
+    key = np.empty(len(ids))
+    for positions in strata.groupby(strata).indices.values():
+        positions = rng.permutation(positions)
+        key[positions] = (np.arange(len(positions)) + rng.random()) / len(positions)
+    n_val = max(1, int(round(len(ids) * val_fraction)))
+    order = np.argsort(key, kind="stable")
+    return np.sort(ids[order[n_val:]]), np.sort(ids[order[:n_val]])
 
-n_val = max(1, int(round(len(ids) * VAL_FRACTION)))
-val_ids, train_ids = ids[:n_val], ids[n_val:]
+
+celltype = df_cells["celltype_final"].where(
+    df_cells.get("valid_celltype_final", pd.Series(True, index=df_cells.index))
+    .fillna(False).astype(bool))
+train_ids, val_ids = stratified_split(celltype.fillna("<unlabeled>"), VAL_FRACTION, SEED)
 
 np.save(OUT_DIR / "train_ids.npy", train_ids)
 np.save(OUT_DIR / "val_ids.npy", val_ids)
 
 print(f"{len(train_ids)} train / {len(val_ids)} val skeletons written to {OUT_DIR}")
+n_val_labeled = int(celltype.reindex(val_ids).notna().sum())
+print(f"  {n_val_labeled} of the val cells are labeled (k-NN queries in 07), "
+      f"over {celltype.reindex(val_ids).nunique()} celltypes")
 
 # %%

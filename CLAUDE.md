@@ -27,13 +27,13 @@ python3 ssl_neuron/main.py --config=ssl_neuron/configs/config.json
 ```
 
 Eyewire2 retina pipeline (`ssl_neuron/eyewire2/`, run in this numbered order) — these are jupytext "percent"-format `.py` files (open directly as notebooks in Jupyter, or run as plain scripts):
-1. `01_preprocess_data.py` — converts skeliner's `.swc` skeletons into the `features.npy`/`neighbors.pkl` layout `GraphDataset` expects (pure functions live in `eyewire2/preprocessing.py`); torch-free, runs locally on Windows. `SWC_DIR` and `DF_PATH` are hardcoded cluster paths and must be adjusted per machine. Also writes a `cell_meta.csv` sidecar: absolute soma positions (for the later mosaic stage, unrecoverable afterwards) and celltype labels (for evaluation only — training is fully self-supervised).
+1. `01_preprocess_data.py` — converts skeliner's `.swc` skeletons into the `features.npy`/`neighbors.pkl` layout `GraphDataset` expects (pure functions live in `eyewire2/preprocessing.py`); torch-free, runs locally on Windows. Input paths come from the `paths` block of `eyewire2/config.json` (cluster first, local mirror second; the first that exists wins), and the cell selection from `preprocessing.cellclass` (`"RGC"`; `null` keeps every class, a local smoke test only). The train/val split is stratified by celltype, so `07` has k-NN queries for every type. Also writes a `cell_meta.csv` sidecar: absolute soma positions (for the later mosaic stage, unrecoverable afterwards) and celltype labels (for evaluation only — training is fully self-supervised).
 2. `02_visualize_data.py` — sanity checks, plus the measurements that settle the spec's open items; also torch-free. Warns if the skeletons on disk still have soma-centered z, i.e. were written by a pre-spec version of `01`.
 3. `03_train_graphdino.py` — actually trains GraphDINO, via `RetinaGraphDataset`; needs the `torch` extra and a GPU, run on the cluster only.
 4. `04_visualize_results.py` — loads the latest checkpoint and inspects the embedding.
 5. `05_render_projections.py` — GICLMorph only: renders each cell's canonical 2D views into `skeletons/<cell_id>/projections.npy`; torch-free.
 6. `06_train_giclmorph.py` — trains GICLMorph (`config_giclmorph.json`, `GICLTrainer`); GPU. With `cmid_weight: 0` it is the like-for-like GraphDINO control.
-7. `07_evaluate_embeddings.py` — k-NN / linear-probe / clustering scores on celltype for every GraphDINO and GICLMorph run found, plus a no-learning depth-profile baseline.
+7. `07_evaluate_embeddings.py` — k-NN (also on consensus-labeled queries alone) / precision@k / linear-probe / clustering scores on celltype for every GraphDINO and GICLMorph run found, plus a no-learning depth-profile baseline; per-class recall, confusion matrices and example retrievals.
 
 `05`–`07` read the `GICLMORPH_CONFIG`, `GICLMORPH_DATA`, `GICLMORPH_CKPTS` environment variables to override their paths.
 

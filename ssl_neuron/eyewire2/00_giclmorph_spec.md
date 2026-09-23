@@ -220,16 +220,17 @@ GraphDINO at 512 nodes should fit comfortably on a 24 GB card, but that is an
 estimate. Log `torch.cuda.max_memory_allocated()` and the time per iteration
 on the first cluster run: 10⁵ iterations may take much longer than expected.
 
-### 7.6 The evaluation split is small and not MorphoGNN's
+### 7.6 The evaluation split is small and not MorphoGNN's — partly addressed
 
-`07` queries the labeled cells in `val_ids`, which `01` draws as a random 10%
-of *all* RGCs. Only the labeled share of that 10% gets scored, so with ~28
-types many classes will have 0–3 val cells, and balanced accuracy will be
-noisy. The split is also not the stratified 70/15/15 of
-`MorphoGNN/eyewire2`, so the numbers are not directly comparable with the
-supervised MorphoGNN test accuracy. Options: a larger `VAL_FRACTION` in `01`,
-or cross-validated k-NN over all labeled cells in `07` (the embedding never
-saw labels, so this does not leak).
+`07` queries the labeled cells in `val_ids`. `01` now stratifies that 10% by
+celltype (`00_dataset_spec.md` §3), so every type gets its share of queries.
+That is 291 labeled val cells on the full set, 1–24 per scored type. Before,
+a plain random draw could leave a small type with none. Balanced accuracy is
+still noisy for the small types: 2–3 queries each. The split is also still
+not the stratified 70/15/15 of `MorphoGNN/eyewire2`, so the numbers are not
+directly comparable with the supervised MorphoGNN test accuracy. Options: a
+larger `VAL_FRACTION` in `01`, or cross-validated k-NN over all labeled cells
+in `07` (the embedding never saw labels, so this does not leak).
 
 ### 7.7 No checkpoint selection
 

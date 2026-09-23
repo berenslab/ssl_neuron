@@ -23,7 +23,11 @@
 # * **k-NN** (cosine, `knn_k`) and **linear-probe** balanced accuracy, with the
 #   labeled cells of `train_ids` as the database / training set and the
 #   labeled cells of `val_ids` -- never seen during SSL training -- as queries.
-#   k-NN is the headline number (`00_dataset_spec.md` section 8);
+#   k-NN is the headline number (`00_dataset_spec.md` section 8). It is also
+#   reported on the consensus-labeled queries alone (`_consensus`), leaving out
+#   cells whose celltype was assigned by a classifier;
+# * retrieval **precision@k** (`retrieval_k`): the share of a query's `retrieval_k`
+#   most similar train cells that share its celltype, macro over classes;
 # * the paper's clustering metrics on all labeled cells, using the celltype as
 #   the cluster assignment: silhouette (SC, higher is better) and
 #   Davies-Bouldin (DBI, lower is better), plus the ARI of a k-means clustering
@@ -34,6 +38,9 @@
 # A torch-free **depth-profile baseline** (a histogram of node depth plus
 # radial field extent, no learning) is scored with the same k-NN, as the floor
 # a learned embedding has to beat on RGCs.
+#
+# Then t-SNE maps per run, and per-class k-NN recall, confusion matrices and
+# example retrievals for every run and the baseline.
 #
 # Needs `torch`; a GPU is not required but helps.
 
@@ -109,31 +116,63 @@ print(f'{len(labels)} labeled cells over {len(CLASSES)} classes '
       f'{EVAL_CFG["min_cells_per_class"]} train cells dropped); '
       f'{labels.index.isin(split_ids["val"]).sum()} of them in val')
 
+# Labels assigned by a classifier rather than by human consensus; scored
+# separately (the `_consensus` column). A dataframe without the column counts
+# every label as consensus.
+if 'celltype_final_decision' in meta.columns:
+    consensus_mask = meta['celltype_final_decision'].reindex(labels.index) != 'classifier'
+else:
+    consensus_mask = pd.Series(True, index=labels.index)
+print(f'{int((~consensus_mask).sum())} of the labeled cells carry a classifier-assigned '
+      f'label ({int((~consensus_mask[consensus_mask.index.isin(split_ids["val"])]).sum())} in val)')
+
 
 # %% [markdown]
 # #### Scoring
 
 # %%
-def knn_predict(query, database, database_labels, k):
+def rank_neighbors(query, database):
+    """ Database indices sorted by cosine similarity to each query, and the
+    similarities themselves. """
     q = query / np.linalg.norm(query, axis=1, keepdims=True)
     d = database / np.linalg.norm(database, axis=1, keepdims=True)
-    nearest = np.argsort(-(q @ d.T), axis=1)[:, :k]
-    votes = database_labels[nearest]
+    similarity = q @ d.T
+    return np.argsort(-similarity, axis=1), similarity
+
+
+def knn_predict(ranking, database_labels, k):
+    votes = database_labels[ranking[:, :k]]
     return np.array([pd.Series(row).mode().iloc[0] for row in votes])
 
 
-def score(emb_by_cell):
-    """ All metrics for one {cell_id: vector} embedding. """
+def split_xy(emb_by_cell):
+    """ Labeled train cells (the database) and labeled val cells (the queries). """
     tr = [c for c in labels.index if c in split_sets['train'] and c in emb_by_cell]
     va = [c for c in labels.index if c in split_sets['val'] and c in emb_by_cell]
     x_tr = np.stack([emb_by_cell[c] for c in tr])
     x_va = np.stack([emb_by_cell[c] for c in va])
-    y_tr, y_va = labels[tr].to_numpy(), labels[va].to_numpy()
+    return x_tr, labels[tr].to_numpy(), x_va, labels[va].to_numpy(), tr, va
+
+
+def score(emb_by_cell):
+    """ All metrics for one {cell_id: vector} embedding. """
+    x_tr, y_tr, x_va, y_va, tr, va = split_xy(emb_by_cell)
+    k, retrieval_k = EVAL_CFG['knn_k'], EVAL_CFG['retrieval_k']
 
     out = {'n_train': len(tr), 'n_val': len(va)}
-    pred = knn_predict(x_va, x_tr, y_tr, EVAL_CFG['knn_k'])
-    out[f'{EVAL_CFG["knn_k"]}nn_bal_acc'] = balanced_accuracy_score(y_va, pred)
-    out[f'{EVAL_CFG["knn_k"]}nn_acc'] = (pred == y_va).mean()
+    ranking, _ = rank_neighbors(x_va, x_tr)
+    pred = knn_predict(ranking, y_tr, k)
+    out[f'{k}nn_bal_acc'] = balanced_accuracy_score(y_va, pred)
+    out[f'{k}nn_acc'] = (pred == y_va).mean()
+    # The same k-NN, scored only on queries whose label is a human consensus
+    # (00_dataset_spec.md section 8). The database keeps every label.
+    consensus = consensus_mask.reindex(va).to_numpy()
+    out[f'{k}nn_bal_acc_consensus'] = (balanced_accuracy_score(y_va[consensus], pred[consensus])
+                                       if consensus.any() else np.nan)
+    # Retrieval: of the `retrieval_k` most similar train cells, the share of the
+    # query's celltype, macro-averaged over classes.
+    hits = (y_tr[ranking[:, :retrieval_k]] == y_va[:, None]).mean(axis=1)
+    out[f'P@{retrieval_k}'] = pd.Series(hits).groupby(y_va).mean().mean()
 
     scaler = StandardScaler().fit(x_tr)
     probe = LogisticRegression(max_iter=5000, class_weight='balanced')
@@ -276,6 +315,97 @@ for name, emb in embeddings.items():
     sc = axes[1].scatter(xy[:, 0], xy[:, 1], s=5, c=[mean_depth[c] for c in ids], cmap='coolwarm')
     fig.colorbar(sc, ax=axes[1], label='mean node z')
     for ax in axes:
+        ax.set_xticks([])
+        ax.set_yticks([])
+    fig.suptitle(name)
+    plt.tight_layout()
+    plt.show()
+
+# %% [markdown]
+# #### Per-class k-NN recall
+#
+# The balanced accuracy above is the mean of these bars. Classes are sorted by
+# how many labeled train cells they have, so a model that only gets the big
+# types right shows up as bars falling off to the right. The baseline is in the
+# same plot: the classes where a run beats it are the ones where it learned
+# something beyond depth profile and field size.
+
+# %%
+by_run = {'depth-profile baseline': baseline, **embeddings}
+order = labels[labels.index.isin(split_sets['train'])].value_counts().index
+recall = {}
+for name, emb in by_run.items():
+    x_tr, y_tr, x_va, y_va, _, _ = split_xy(emb)
+    pred = knn_predict(rank_neighbors(x_va, x_tr)[0], y_tr, EVAL_CFG['knn_k'])
+    recall[name] = pd.Series(pred == y_va).groupby(y_va).mean().reindex(order)
+recall = pd.DataFrame(recall)
+n_queries = labels[labels.index.isin(split_sets['val'])].value_counts().reindex(order).fillna(0)
+
+fig, ax = plt.subplots(figsize=(max(8, 0.3 * len(order)), 4))
+width = 0.8 / len(recall.columns)
+for i, name in enumerate(recall.columns):
+    ax.bar(np.arange(len(order)) + (i - (len(recall.columns) - 1) / 2) * width,
+           recall[name], width=width, label=name)
+ax.set_xticks(range(len(order)), [f'{t} ({int(n)})' for t, n in n_queries.items()],
+              rotation=90, fontsize='x-small')
+ax.set_ylabel(f'{EVAL_CFG["knn_k"]}-NN recall')
+ax.set_title('Per-class k-NN recall on val (query count in brackets)')
+ax.legend(fontsize='x-small')
+plt.tight_layout()
+plt.show()
+
+# %% [markdown]
+# #### Confusion matrices
+#
+# Row-normalized, rows = true celltype, same class order as above. Off-diagonal
+# mass between types that stratify at the same depth is expected from anything
+# that has mostly learned depth; the interesting question is whether a learned
+# run resolves pairs the baseline confuses.
+
+# %%
+for name, emb in by_run.items():
+    x_tr, y_tr, x_va, y_va, _, _ = split_xy(emb)
+    pred = knn_predict(rank_neighbors(x_va, x_tr)[0], y_tr, EVAL_CFG['knn_k'])
+    confusion = pd.crosstab(pd.Series(y_va, name='true'), pd.Series(pred, name='pred'),
+                            normalize='index').reindex(index=order, columns=order).fillna(0)
+
+    fig, ax = plt.subplots(figsize=(0.3 * len(order) + 4, 0.3 * len(order) + 3))
+    im = ax.imshow(confusion.to_numpy(), cmap='viridis', vmin=0, vmax=1)
+    ax.set_xticks(range(len(order)), order, rotation=90, fontsize='xx-small')
+    ax.set_yticks(range(len(order)), order, fontsize='xx-small')
+    ax.set(xlabel='k-NN prediction', ylabel='true celltype', title=name)
+    fig.colorbar(im, ax=ax, fraction=0.046)
+    plt.tight_layout()
+    plt.show()
+
+# %% [markdown]
+# #### Example queries
+#
+# One val cell per row (black), then its most similar train cells, with their
+# cosine similarity; green titles share the query's celltype, red ones do not.
+# xz views, because stratification depth is what should be driving the
+# similarity -- a red hit at the same depth is a depth-only match.
+
+# %%
+N_QUERIES, N_HITS = 4, 5
+for name, emb in by_run.items():
+    x_tr, y_tr, x_va, y_va, tr, va = split_xy(emb)
+    ranking, similarity = rank_neighbors(x_va, x_tr)
+    queries = np.random.default_rng(0).choice(len(va), size=min(N_QUERIES, len(va)), replace=False)
+
+    # Shared axes, so field width and depth compare across panels.
+    fig, axes = plt.subplots(len(queries), N_HITS + 1, figsize=(2.2 * (N_HITS + 1), 1.6 * len(queries)),
+                             sharex=True, sharey=True, squeeze=False)
+    for row, q in enumerate(queries):
+        pos = load_positions(va[q])
+        axes[row, 0].scatter(pos[::5, 0], pos[::5, 2], s=0.3, lw=0, c='k')
+        axes[row, 0].set_title(f'query\n{y_va[q]}', fontsize='xx-small')
+        for col, hit in enumerate(ranking[q, :N_HITS], start=1):
+            pos = load_positions(tr[hit])
+            axes[row, col].scatter(pos[::5, 0], pos[::5, 2], s=0.3, lw=0, c='tab:blue')
+            axes[row, col].set_title(f'{y_tr[hit]}\n{similarity[q, hit]:.3f}', fontsize='xx-small',
+                                     color='tab:green' if y_tr[hit] == y_va[q] else 'tab:red')
+    for ax in axes.ravel():
         ax.set_xticks([])
         ax.set_yticks([])
     fig.suptitle(name)

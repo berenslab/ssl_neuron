@@ -102,7 +102,21 @@ single connected component, axons are removed, `features.npy` is N×3 (xyz).
   Concretely, selection is `cellclass_final == 'RGC'`, further masked by
   `valid_cellclass_final` and `valid_status` where those columns exist — the
   same consensus-label columns `eyewire2-datajoint`'s
-  `prepare_manuscript_df.py` produces and `plot_RGCs.ipynb` selects on.
+  `prepare_manuscript_df.py` produces and `plot_RGCs.ipynb` selects on. On the
+  2026-09-16 dataframe that is 3691 RGCs, 2915 of them typed (39 celltypes;
+  28 with ≥ 20 cells).
+- **Config, not code**: the input paths and the cellclass live in `config.json`
+  (`paths`, `preprocessing.cellclass`), as in `MorphoGNN/eyewire2`. Each path is
+  a list, cluster first and local mirror second, and the first that exists
+  wins. `cellclass: null` keeps every class. That is only a local smoke test:
+  the 113 locally mirrored skeletons hold 29 RGCs, one per type at most,
+  next to 62 ACs and 15 BCs.
+- **Train/val split**: 10% val, **stratified by celltype**, with the unlabeled
+  cells as one more stratum. Training never looks at the split's labels, but
+  `07` uses the labeled val cells as k-NN queries, and a plain random split left
+  small types without any. The allocation is a systematic stratified sample,
+  so each type gets the floor or ceiling of its 10% share and the total is
+  exactly 10% (on the full set: 369 val cells, 291 of them labeled).
 - **QC rule**: drop skeletons below 1000 nodes. **Assumed.** In the earlier
   113-cell snapshot the 10th percentile of xy extent was 28 µm, which is a
   broken or partial reconstruction, not a small cell. Since arbor size is now a
@@ -217,6 +231,13 @@ across-cell z distribution and the pooled depth histogram; once `01` has been
 re-run with xy-only centering, the IPL band structure should be visible across
 cells and settles this. Do it before the first real training run.
 
+The unit question is separate from a stronger one: is the frame *shared* at
+all? Types can only separate by depth if it is. `02` also plots the mean
+stratification profile of the largest celltypes. If those peak at clearly
+different depths, the assumption holds. If they lie on top of each other, the
+premise of §1.2 fails and per-cell z-centering would be the right call after
+all. (This needs the cluster set; locally no RGC type has more than one cell.)
+
 ### 7.2 Is there a truncation flag? — partly answered
 
 There is no explicit truncation flag in `df_all_neurons`. What it does carry
@@ -271,6 +292,20 @@ profiles. If the embedding is doing its job, cells that cluster together should
 have similar stratification profiles — and if they don't, that is more
 interesting than the accuracy number.
 
+Beyond the headline number, `07` also reports retrieval precision@k,
+per-class k-NN recall against the depth-profile baseline, confusion matrices
+and example retrievals (xz views). The last three are the ones that show
+*where* a run beats the baseline, not only whether it does. They follow
+`MorphoGNN/eyewire2/04_evaluate_results.py`.
+
+**Label provenance.** 413 of the 2915 typed RGCs have
+`celltype_final_decision == 'classifier'`: their type was assigned by a model,
+not by human consensus (1627 `both_strong`, 875 `both_weak`). As queries,
+they make the k-NN score partly a measure of agreement with that classifier.
+`07` therefore also scores the consensus-labeled queries alone
+(`<k>nn_bal_acc_consensus`); the database keeps every label. Nothing is
+excluded from training, which never sees labels anyway.
+
 Post-hoc stages, deliberately outside the model:
 
 - **Orientation subtypes** (§1.3): fit a per-cell arbor asymmetry vector, then
@@ -287,9 +322,9 @@ Post-hoc stages, deliberately outside the model:
 | `augment.py` | The position augmentations of §4, plain numpy so they can be inspected without the `torch` extra. Refuses a z-translation outright. |
 | `preprocessing.py` | SWC parsing, axon removal, sparse connectivity repair, QC, xy-only centering. The pure functions behind `01`. |
 | `dataset.py` | `RetinaGraphDataset`, a `GraphDataset` subclass that swaps in those augmentations, plus a matching `build_dataloader`. |
-| `config.json` | The §4 parameter values, under `data.augment`. |
-| `01_preprocess_data.py` | Driver: cell selection, the preprocessing loop with a QC breakdown, `cell_meta.csv`, train/val split. |
-| `02_visualize_data.py` | Sanity checks, and the measurements that settle §7.1 and §7.3. |
+| `config.json` | The §4 parameter values, under `data.augment`; the §3 input paths and cellclass, under `paths` / `preprocessing`. |
+| `01_preprocess_data.py` | Driver: cell selection, the preprocessing loop with a QC breakdown, `cell_meta.csv`, stratified train/val split. |
+| `02_visualize_data.py` | Sanity checks; the measurements that settle §7.1 and §7.3; field-size spread, per-celltype depth profiles, class balance and label provenance of the evaluation subset. |
 | `03_train_graphdino.py` | Training, now using `RetinaGraphDataset`. |
 
 Changes outside this folder, all backward compatible (the Allen config still

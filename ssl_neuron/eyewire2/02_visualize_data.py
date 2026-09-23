@@ -31,6 +31,12 @@
 # * **§4 — do the augmentations behave?** Two augmented views of one cell,
 #   plus a numeric check that the xy rotation is norm-preserving and leaves z
 #   untouched.
+#
+# And, using the celltype labels in `cell_meta.csv` (evaluation only -- nothing
+# here feeds back into training), two checks on what the embedding is supposed
+# to pick up: whether celltypes stratify at *different* depths (the direct test
+# of the shared-frame assumption in §1.2), and whether dendritic field size
+# still spans several-fold across cells (§1.4).
 
 # %%
 import json
@@ -38,7 +44,9 @@ import pickle
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.collections import LineCollection
 
 from ssl_neuron.utils import plot_neuron
 from ssl_neuron.eyewire2.augment import augment_positions
@@ -60,6 +68,26 @@ with open(THIS_DIR / "config.json") as f:
 cell_ids = sorted(p.name for p in (DATA_DIR / "skeletons").iterdir() if p.is_dir())
 print(f"{len(cell_ids)} preprocessed skeletons in {DATA_DIR}")
 
+# Celltype labels, for the label-dependent checks below. A missing sidecar
+# means the skeletons predate the current `01` (and are stale, see §6.2).
+META_PATH = DATA_DIR / "cell_meta.csv"
+if META_PATH.exists():
+    meta = pd.read_csv(META_PATH, index_col="cell_id", dtype={"cell_id": str})
+    not_in_meta = set(cell_ids) - set(meta.index)
+    if not_in_meta:
+        print(f"{len(not_in_meta)} skeleton directories are not in cell_meta.csv "
+              f"(left over from an earlier run of 01) -- skipped")
+        cell_ids = [c for c in cell_ids if c in meta.index]
+    valid = meta.get("valid_celltype_final", pd.Series(True, index=meta.index))
+    celltype = meta["celltype_final"].where(valid.fillna(False).astype(bool)).reindex(cell_ids)
+else:
+    print(f"WARNING: no {META_PATH.name} -- celltype checks are skipped. "
+          f"Re-run 01_preprocess_data.py.")
+    meta = None
+    celltype = pd.Series(np.nan, index=cell_ids, dtype=object)
+print(f"{int(celltype.notna().sum())} of them carry a celltype label, "
+      f"over {celltype.nunique()} types")
+
 
 def load_cell(cell_id):
     features = np.load(DATA_DIR / "skeletons" / cell_id / "features.npy")
@@ -71,6 +99,16 @@ def load_cell(cell_id):
 def edge_array(neighbors):
     """ Unique edges as an (E, 2) index array. """
     return np.array([(i, j) for i, nbrs in neighbors.items() for j in nbrs if j > i])
+
+
+def plot_skeleton(ax, features, neighbors, ax1=0, ax2=1, color="tab:blue"):
+    """ `plot_neuron`, but one LineCollection instead of one `plot` call per
+    edge (fast enough for full-size skeletons), and without resetting the axis
+    limits, so several cells can share them. """
+    edges = edge_array(neighbors)
+    segments = features[edges][:, :, [ax1, ax2]]
+    ax.add_collection(LineCollection(segments, colors=color, linewidths=0.5))
+    ax.scatter(*features[0, [ax1, ax2]], color="k", s=10, zorder=10)
 
 
 # %% [markdown]
@@ -115,6 +153,28 @@ print(f"p10: {np.percentile(extents, 10, axis=0).round(1)}, "
       f"p90: {np.percentile(extents, 90, axis=0).round(1)}")
 
 # %% [markdown]
+# #### §1.4 Dendritic field size must span several-fold
+#
+# Field size is a feature the model is meant to use (alpha types differ from
+# small-field types mostly by size), so nothing in preprocessing may have
+# rescaled cells to a common size -- the xy extent below must spread widely.
+# A long left tail is the other thing to look for: large-but-clipped arbors at
+# the volume boundary present as small cells and pass the node-count QC
+# (§7.2).
+
+# %%
+xy_extent = extents[:, :2].max(axis=1)
+
+fig, ax = plt.subplots(figsize=(6, 3.5))
+ax.hist(xy_extent, bins=40)
+ax.set(xlabel="xy extent (max of x, y)", ylabel="# cells", title="Dendritic field size")
+plt.show()
+
+p10, p50, p90 = np.percentile(xy_extent, [10, 50, 90])
+print(f"xy extent: p10={p10:.0f}, median={p50:.0f}, p90={p90:.0f} -- "
+      f"a {p90 / p10:.1f}x spread between p10 and p90")
+
+# %% [markdown]
 # #### §7.1 Is the depth frame shared, and in what unit?
 #
 # x and y are soma-centered, z is not. So soma z should *vary* across cells
@@ -150,6 +210,44 @@ print(f"node z: {np.percentile(all_z, 1):.2f} .. {np.percentile(all_z, 99):.2f} 
 if np.allclose(soma_z, 0):
     print("WARNING: every soma sits at z=0 -- these skeletons are soma-centered in z. "
           "Re-run 01_preprocess_data.py (see 00_dataset_spec.md section 6.2).")
+
+# %% [markdown]
+# #### §7.1 Do celltypes stratify at different depths?
+#
+# The direct test of the shared-frame assumption. Each curve is one celltype's
+# mean stratification profile (each cell's node-z histogram, normalized, then
+# averaged so every cell counts once). If the depth frame is shared, types peak
+# at clearly different depths; if the curves lie on top of each other, z is not
+# comparable across cells and no amount of training will separate the types on
+# depth.
+
+# %%
+N_PROFILE_CLASSES = 8
+MIN_PROFILE_CELLS = 3
+
+type_counts = celltype.value_counts()
+profile_types = type_counts[type_counts >= MIN_PROFILE_CELLS].index[:N_PROFILE_CLASSES]
+depth_bins = np.linspace(np.percentile(all_z, 0.5), np.percentile(all_z, 99.5), 61)
+depth_centers = 0.5 * (depth_bins[1:] + depth_bins[:-1])
+
+def depth_profile(cell_id, bins):
+    z = np.load(DATA_DIR / "skeletons" / cell_id / "features.npy")[:, 2]
+    return np.histogram(z, bins=bins)[0] / len(z)
+
+
+if len(profile_types) == 0:
+    print(f"No celltype has {MIN_PROFILE_CELLS}+ cells here -- skipped.")
+else:
+    fig, ax = plt.subplots(figsize=(7, 4))
+    for t in profile_types:
+        members = celltype.index[celltype == t]
+        profile = np.mean([depth_profile(c, depth_bins) for c in members], axis=0)
+        ax.plot(depth_centers, profile, label=f"{t} (n={len(members)})")
+    ax.set(xlabel="node z", ylabel="fraction of nodes",
+           title=f"Stratification profiles, {len(profile_types)} largest celltypes")
+    ax.legend(fontsize="x-small")
+    plt.tight_layout()
+    plt.show()
 
 # %% [markdown]
 # #### §7.3 Is node spacing uniform along the skeleton?
@@ -245,18 +343,29 @@ print(f"  correlation:  median {np.median(correlation):.4f}, min {correlation.mi
 # %% [markdown]
 # #### Example skeletons
 #
-# Top row: xy (dendritic field, soma-centered). Bottom row: xz (stratification
-# depth, *not* centered -- cells sit at different depths on purpose).
+# Random cells, all drawn on the same axis limits so relative field size and
+# depth are visible at a glance. Top row: xy (dendritic field, soma-centered).
+# Bottom row: xz (stratification depth, *not* centered -- cells sit at
+# different depths on purpose).
 
 # %%
-fig, axes = plt.subplots(2, n_examples, figsize=(4 * n_examples, 7))
-axes = np.atleast_2d(axes)
+N_SHOW = min(5, len(cell_ids))
+show_ids = list(np.random.default_rng(1).choice(cell_ids, N_SHOW, replace=False))
+show_cells = [load_cell(c) for c in show_ids]
+xy_lim = max(np.abs(f[:, :2]).max() for f, _ in show_cells) * 1.05
+z_lim = (all_z.min() - 1, all_z.max() + 1)
 
-for col, cell_id in enumerate(cell_ids[:n_examples]):
-    features, neighbors = load_cell(cell_id)
-    plot_neuron(neighbors, features, ax1=0, ax2=1, ax=axes[0, col])
-    plot_neuron(neighbors, features, ax1=0, ax2=2, ax=axes[1, col])
-    axes[0, col].set_title(f"{cell_id}\n({len(features)} nodes)", fontsize="small")
+fig, axes = plt.subplots(2, N_SHOW, figsize=(3 * N_SHOW, 6.5),
+                         gridspec_kw={"height_ratios": [3, 1]})
+axes = axes.reshape(2, N_SHOW)
+for col, (cell_id, (features, neighbors)) in enumerate(zip(show_ids, show_cells)):
+    plot_skeleton(axes[0, col], features, neighbors, 0, 1)
+    plot_skeleton(axes[1, col], features, neighbors, 0, 2)
+    axes[0, col].set(xlim=(-xy_lim, xy_lim), ylim=(-xy_lim, xy_lim), aspect="equal")
+    axes[1, col].set(xlim=(-xy_lim, xy_lim), ylim=z_lim)
+    label = celltype.get(cell_id)
+    axes[0, col].set_title(f"{label if isinstance(label, str) else 'untyped'}\n"
+                           f"{cell_id} ({len(features)} nodes)", fontsize="x-small")
 
 axes[0, 0].set_ylabel("y")
 axes[1, 0].set_ylabel("z (depth)")
@@ -303,5 +412,53 @@ after = np.linalg.norm(rigid[sample, None, :2] - rigid[None, sample, :2], axis=-
 print(f"max relative change in pairwise xy distance: "
       f"{np.abs(after - before).max() / max(before.max(), 1e-9):.2e}")
 print(f"max change in z: {np.abs(rigid[:, 2] - features[:, 2]).max():.2e}")
+
+# %% [markdown]
+# #### The evaluation subset: class balance and label provenance
+#
+# Training ignores labels, but `07_evaluate_embeddings.py` scores on them, and
+# two properties of this subset shape what its numbers mean:
+#
+# * **Balance.** The classes are strongly imbalanced, which is why `07` reports
+#   *balanced* accuracy. Its k-NN only scores classes with at least
+#   `evaluation.min_cells_per_class` labeled cells in `train_ids`.
+# * **Provenance** (`celltype_final_decision`). `classifier` labels were
+#   assigned by a model rather than by human consensus (`both_strong` /
+#   `both_weak`), so a k-NN score over them partly measures agreement with that
+#   classifier. `07` therefore also scores the consensus-labeled queries alone.
+
+# %%
+with open(THIS_DIR / "config_giclmorph.json") as f:
+    MIN_CELLS = json.load(f)["evaluation"]["min_cells_per_class"]
+
+if celltype.notna().sum() == 0:
+    print("No labeled cells -- skipped.")
+else:
+    decision = (meta["celltype_final_decision"].reindex(celltype.index).fillna("unknown")
+                if "celltype_final_decision" in meta.columns
+                else pd.Series("unknown", index=celltype.index))
+    table = pd.crosstab(celltype.dropna(), decision[celltype.notna()])
+    table = table.loc[table.sum(axis=1).sort_values(ascending=False).index]
+
+    fig, ax = plt.subplots(figsize=(max(6, 0.25 * len(table)), 5))
+    bottom = np.zeros(len(table))
+    for col in table.columns:
+        ax.bar(range(len(table)), table[col], bottom=bottom, label=col)
+        bottom += table[col].to_numpy()
+    ax.set_xticks(range(len(table)), table.index, rotation=90, fontsize="x-small")
+    ax.set_ylabel("# cells")
+    ax.set_title("celltype_final over the preprocessed cells")
+    ax.legend(title="decision", fontsize="x-small")
+    plt.tight_layout()
+    plt.show()
+
+    train_ids = {str(c) for c in np.load(DATA_DIR / "train_ids.npy")}
+    train_counts = celltype[celltype.index.isin(train_ids)].value_counts()
+    kept = train_counts[train_counts >= MIN_CELLS]
+    print(f"{len(table)} celltypes, {int(table.to_numpy().sum())} labeled cells; "
+          f"largest {table.sum(axis=1).max()}, smallest {table.sum(axis=1).min()}")
+    print(f"07 will score {len(kept)} classes ({int(kept.sum())} train cells with "
+          f">= {MIN_CELLS} per class)")
+    print("label provenance: " + ", ".join(f"{k} {v}" for k, v in table.sum().items()))
 
 # %%
