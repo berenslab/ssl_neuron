@@ -12,6 +12,10 @@ in `00_dataset_spec.md` (sections 4 and 6). In short:
   random 3D rotation, which is not orthogonal: it shears and rescales the arbor
   (median area factor 0.50 over 20k draws).
 
+`random_crop_xy` is the one graph-topology augmentation here: it mimics a cell
+clipped by the edge of the imaged volume, and returns which nodes survive
+rather than new positions.
+
 Everything here is plain numpy, so augmentations can be inspected locally (e.g.
 from `02_visualize_data.py`) without the `torch` extra installed.
 """
@@ -101,6 +105,77 @@ def random_translation(positions, sigma, rng=None):
         return positions.copy()
 
     return positions + rng.normal(size=3) * sigma
+
+
+def random_crop_xy(positions, neighbors, size, soma_id=0, margin=0.0, p=1.0,
+                   min_nodes=0, max_tries=10, rng=None):
+    """ Clip the arbor as if the cell sat near the edge of the imaged volume.
+
+    The volume is modeled as a square of side `size` (µm) in the xy-plane,
+    randomly oriented, with the soma placed uniformly inside it but at least
+    `margin` µm from every edge. Nodes outside the square are removed, and so
+    is everything no longer connected to the soma -- a dendrite that leaves the
+    volume and comes back would be a separate fragment in the segmentation, not
+    part of this cell. z plays no role.
+
+    This is a graph-topology augmentation (it deletes nodes), so it has to run
+    before branch deletion and subsampling, not with the position
+    augmentations. Nodes are kept or dropped whole; edges crossing the border
+    are not cut at the border, so the clipped arbor ends at its last node
+    inside, which on a cached graph with long merged edges can be a few µm
+    short of the edge.
+
+    Args:
+        positions: node positions (N x 3), xy soma-centered.
+        neighbors: dict node id -> set of neighbor ids (not modified).
+        size: side length of the square in µm, or a (lo, hi) range to draw it
+            from uniformly per call.
+        soma_id: node that must survive; the crop is anchored on it.
+        margin: minimal distance of the soma to the square's edges, in µm.
+            Must be below size / 2. The soma's position is drawn relative to
+            the soma itself, so this does not depend on where the cell's other
+            nodes are.
+        p: probability of cropping at all.
+        min_nodes: a crop leaving fewer nodes is redrawn, up to `max_tries`
+            times, after which the graph is returned uncropped. Set this to at
+            least `n_nodes`, or subsampling has nothing to subsample.
+        max_tries: see `min_nodes`.
+
+    Returns:
+        The set of kept node ids, or `None` if the graph was left uncropped
+        (not drawn, or no draw kept `min_nodes`).
+    """
+    rng = _as_rng(rng)
+    lo, hi = (size, size) if np.isscalar(size) else size
+    if not 0 <= margin < lo / 2:
+        raise ValueError(f'crop margin must be in [0, size / 2), got margin={margin}, size={size}.')
+    if rng.random() >= p:
+        return None
+
+    xy = positions[:, :2] - positions[soma_id, :2]
+    for _ in range(max_tries):
+        side = rng.uniform(lo, hi)
+        angle = rng.uniform(0, 2 * np.pi)
+        cos, sin = np.cos(angle), np.sin(angle)
+        # Node coordinates in the square's frame, with the soma at the origin.
+        local = xy @ np.array([[cos, -sin], [sin, cos]])
+        # Square's lower corner relative to the soma, per axis.
+        corner = -rng.uniform(margin, side - margin, size=2)
+        inside = np.all((local >= corner) & (local <= corner + side), axis=1)
+
+        # Soma's connected component within the square.
+        kept = {soma_id}
+        stack = [soma_id]
+        while stack:
+            for n in neighbors[stack.pop()]:
+                if inside[n] and n not in kept:
+                    kept.add(n)
+                    stack.append(n)
+
+        if len(kept) >= min_nodes:
+            return kept
+
+    return None
 
 
 def augment_positions(positions,

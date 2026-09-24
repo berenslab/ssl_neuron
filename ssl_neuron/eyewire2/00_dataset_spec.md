@@ -140,6 +140,7 @@ changes is which transforms are allowed and with what magnitude.
 | Random branch deletion | `n_drop_branch: 5` (was 10) | Keeps views genuinely different without routinely amputating enough arbor to distort field size or the depth profile. |
 | Subsample to fixed N | `n_nodes: 512` (was 200) | The depth profile the model sees *is* the z-histogram of these N nodes. At 200 nodes a 900 µm alpha arbor gets one node per ~20 µm; 512 gives ~2.5× the profile resolution at ~6.5× the attention cost (O(N²)). |
 | Load-time cache subsample | `cache_nodes: 2048` (was hardcoded 1000) | Must stay comfortably above `n_nodes` or per-view subsampling has nothing left to vary. |
+| Volume-edge clipping (`crop_xy`) | p = 0.5; square side 300–600 µm, randomly oriented; soma ≥ 30 µm from every edge | Mimics a cell near the border of the imaged volume. Nodes outside the square go, and so does anything no longer connected to the soma. Runs first, before branch deletion. A draw leaving fewer than `n_nodes` is redrawn (10 tries, then no clip). **Assumed** magnitudes: on the 184-cell local snapshot, ~2/3 of views stay unclipped, the median view keeps 96% of its nodes and the 10th percentile 63%. |
 
 ### Position augmentations
 
@@ -160,6 +161,10 @@ precedes jitter so that jitter magnitude stays in absolute units.
 - **Anisotropic xy scaling or shear** — distorts field shape, which is signal.
 - **Random xy wedge/sector removal** — mimics incomplete reconstruction, but
   corrupts field size and symmetry, which are the features we are protecting.
+  Volume-edge clipping (above) trades against the same thing on purpose: it
+  cuts along a straight line only, matching the one kind of truncation the
+  data actually has, and is kept mild. If it starts to blur field-size
+  separation between types, lower `p` before anything else.
 - **Dropping a contiguous z-slab** — deletes exactly the depth profile.
 - **Arc-length resampling of nodes in preprocessing** — considered and
   rejected; skeliner's native node spacing is kept. See the caveat in §7.3.
@@ -319,7 +324,7 @@ Post-hoc stages, deliberately outside the model:
 
 | File | Role |
 | --- | --- |
-| `augment.py` | The position augmentations of §4, plain numpy so they can be inspected without the `torch` extra. Refuses a z-translation outright. |
+| `augment.py` | The position augmentations of §4 and the volume-edge clip, plain numpy so they can be inspected without the `torch` extra. Refuses a z-translation outright. |
 | `preprocessing.py` | SWC parsing, axon removal, sparse connectivity repair, QC, xy-only centering. The pure functions behind `01`. |
 | `dataset.py` | `RetinaGraphDataset`, a `GraphDataset` subclass that swaps in those augmentations, plus a matching `build_dataloader`. |
 | `config.json` | The §4 parameter values, under `data.augment`; the §3 input paths and cellclass, under `paths` / `preprocessing`. |
@@ -332,7 +337,9 @@ runs unchanged):
 
 - `ssl_neuron/datasets.py`: `jitter_var`, `rotation_axis` and `translate_var`
   became optional; the load-time node cap became the `cache_nodes` config key
-  instead of a hardcoded 1000; `build_dataloader` takes a `dataset_cls`.
+  instead of a hardcoded 1000; `build_dataloader` takes a `dataset_cls`;
+  branch deletion takes the node ids present in the graph rather than assuming
+  `0..N-1`, so it runs on a clipped subgraph.
 
 The stock `rotate_graph`, `jitter_node_pos` and `translate_soma_pos` in
 `ssl_neuron/utils.py` are untouched and still used by the Allen pipeline. They

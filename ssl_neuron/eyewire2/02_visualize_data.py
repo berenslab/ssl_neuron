@@ -49,7 +49,7 @@ import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
 
 from ssl_neuron.utils import plot_neuron
-from ssl_neuron.eyewire2.augment import augment_positions
+from ssl_neuron.eyewire2.augment import augment_positions, random_crop_xy
 
 # %% [markdown]
 # #### Config
@@ -412,6 +412,35 @@ after = np.linalg.norm(rigid[sample, None, :2] - rigid[None, sample, :2], axis=-
 print(f"max relative change in pairwise xy distance: "
       f"{np.abs(after - before).max() / max(before.max(), 1e-9):.2e}")
 print(f"max change in z: {np.abs(rigid[:, 2] - features[:, 2]).max():.2e}")
+
+# %% [markdown]
+# Volume-edge clipping (`data.crop_xy`): a few forced draws (p = 1) on the
+# same cell, kept nodes in black over the full arbor in grey. Each cut should
+# be a straight line (up to the last node inside), and nothing disconnected
+# from the soma should survive. Below, how much of each cell the configured
+# draw keeps, with `min_nodes = n_nodes` as in training.
+
+# %%
+crop_kwargs = {**config["data"]["crop_xy"], "min_nodes": config["data"]["n_nodes"]}
+fig, axes = plt.subplots(1, 4, figsize=(14, 3.8))
+for ax in axes:
+    kept = random_crop_xy(features, neighbors, **{**crop_kwargs, "p": 1.0})
+    kept = sorted(kept) if kept is not None else range(len(features))
+    ax.scatter(*features[:, :2].T, s=0.3, c="0.8")
+    ax.scatter(*features[kept, :2].T, s=0.3, c="k")
+    ax.set_aspect("equal")
+    ax.set_title(f"{len(kept) / len(features):.0%} kept")
+plt.tight_layout()
+plt.show()
+
+kept_frac = []
+for cell_id in cell_ids:
+    f, nb = load_cell(cell_id)
+    kept = random_crop_xy(f, nb, **crop_kwargs)
+    kept_frac.append(1.0 if kept is None else len(kept) / len(f))
+kept_frac = np.array(kept_frac)
+print(f"unclipped: {(kept_frac == 1).mean():.0%} of cells; fraction kept, "
+      f"percentiles 10/25/50: {np.percentile(kept_frac, [10, 25, 50]).round(2)}")
 
 # %% [markdown]
 # #### The evaluation subset: class balance and label provenance

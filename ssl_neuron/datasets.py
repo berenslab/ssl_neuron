@@ -86,7 +86,8 @@ class GraphDataset(Dataset):
     def _delete_subbranch(self, neighbors, soma_id, distances, leaf_branch_nodes):
 
         leaf_branch_nodes = set(leaf_branch_nodes)
-        not_deleted = set(range(len(neighbors))) 
+        # The node ids actually present, so this also works on a subgraph.
+        not_deleted = set(neighbors)
         for i in range(self.n_drop_branch):
             neighbors, drop_nodes = drop_random_branch(leaf_branch_nodes, neighbors, distances, keep_nodes=self.n_nodes)
             not_deleted -= drop_nodes
