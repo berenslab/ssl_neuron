@@ -37,6 +37,8 @@ python3 ssl_neuron/main.py --config=ssl_neuron/configs/config.json
 
 The training code will write checkpoint files of the model weights to the checkpoint directory specified in the config file.
 
+**Shared memory in Docker.** DataLoader workers pass batches to the main process through `/dev/shm`. Docker's default is only 64 MB, and with `n_nodes: 512` one batch of float64 adjacency matrices (2 views x 16 samples x 512² x 8 B) already needs 64 MiB, so training fails with `unable to allocate shared memory(shm) ... No space left on device`. Check the size from inside the container (`df -h /dev/shm`, not on the host) and start the container with `--shm-size=16g` or `--ipc=host`; otherwise set `num_workers: 0` (no shared memory, slower loading), since even a single worker's batch does not fit in 64 MB.
+
 
 ## Demos
 For examples on how to load the data, train the model and perform inference with a pretrained model, see Jupyter notebooks in the [demos folder](https://github.com/marissaweis/ssl_neuron/tree/main/ssl_neuron/demos).
