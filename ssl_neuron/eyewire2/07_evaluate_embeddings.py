@@ -50,18 +50,24 @@
 # %%
 import json
 import os
+import warnings
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
+from tqdm import tqdm
 from sklearn.cluster import KMeans
 from sklearn.linear_model import LogisticRegression
 from sklearn.manifold import TSNE
 from sklearn.metrics import (adjusted_rand_score, balanced_accuracy_score,
                              davies_bouldin_score, silhouette_score)
 from sklearn.preprocessing import StandardScaler
+
+# A k-NN that predicts a class absent from a (small) query set is expected, and the
+# bootstrap below would repeat this warning thousands of times.
+warnings.filterwarnings('ignore', message='y_pred contains classes not in y_true')
 
 from ssl_neuron.datasets import GraphDataset
 from ssl_neuron.giclmorph import create_model as create_giclmorph
@@ -109,8 +115,16 @@ if f'valid_{LABEL_COLUMN}' in meta.columns:
 labels = meta.loc[labeled, LABEL_COLUMN]
 
 # `test` is the frozen held-out split from 01 (absent in data preprocessed
-# before it existed). Tune on val; look at test only for the final comparison.
-SPLITS = [s for s in ('train', 'val', 'test') if (DATA_DIR / f'{s}_ids.npy').exists()]
+# before it existed). Tune on val; look at test only for the final comparison,
+# so it is only loaded, embedded and scored with GICLMORPH_EVAL_TEST=1.
+RUN_TEST = os.environ.get('GICLMORPH_EVAL_TEST') == '1'
+if RUN_TEST and not (DATA_DIR / 'test_ids.npy').exists():
+    raise FileNotFoundError('GICLMORPH_EVAL_TEST=1, but there is no test_ids.npy -- rerun 01.')
+SPLITS = [s for s in ('train', 'val', 'test')
+          if (DATA_DIR / f'{s}_ids.npy').exists() and (s != 'test' or RUN_TEST)]
+N_VIEWS = int(os.environ.get('GICLMORPH_EVAL_VIEWS', EVAL_CFG['n_eval_views']))
+print(f'splits: {SPLITS} ({"test is scored" if RUN_TEST else "test is held back"}); '
+      f'{N_VIEWS} views per cell')
 QUERY_SPLITS = [s for s in SPLITS if s != 'train']
 split_ids = {split: [str(c) for c in np.load(DATA_DIR / f'{split}_ids.npy')]
              for split in SPLITS}
@@ -163,21 +177,40 @@ def cells_xy(emb_by_cell, *splits):
     return np.stack([emb_by_cell[c] for c in cells]), labels[cells].to_numpy(), cells
 
 
-def bootstrap_ci(y, pred, n=1000, seed=0):
-    """ 95% interval of the balanced accuracy over resampled queries. """
+def stratified_resamples(y, n=1000, seed=0):
+    """ `n` index sets that resample the queries *within each class*. A plain
+    bootstrap drops the rare, hard classes from many resamples, and balanced
+    accuracy (which averages over the classes present) then reads too high. """
     rng = np.random.default_rng(seed)
-    scores = []
-    for _ in range(n):
-        idx = rng.integers(0, len(y), len(y))
-        scores.append(balanced_accuracy_score(y[idx], pred[idx]))
+    by_class = [np.flatnonzero(y == c) for c in np.unique(y)]
+    return [np.concatenate([rng.choice(idx, size=len(idx)) for idx in by_class]) for _ in range(n)]
+
+
+def bootstrap_ci(y, pred):
+    """ 95% interval of the balanced accuracy over stratified resamples. """
+    scores = [balanced_accuracy_score(y[idx], pred[idx]) for idx in stratified_resamples(y)]
     return np.percentile(scores, [2.5, 97.5])
 
 
-def score(emb_by_cell, query='val'):
-    """ All metrics for one {cell_id: vector} embedding. The labeled train
-    cells are the database; the labeled cells of the `query` split are the
-    queries. The leave-one-out and clustering scores always use train + val, so
-    the test split is only ever touched through `query='test'`. """
+def paired_diff_ci(y, pred_a, pred_b):
+    """ Balanced accuracy of `a` minus `b` on the same queries, with a 95%
+    interval over the same stratified resamples, so the shared query noise
+    cancels. """
+    diffs = [balanced_accuracy_score(y[idx], pred_a[idx]) - balanced_accuracy_score(y[idx], pred_b[idx])
+             for idx in stratified_resamples(y)]
+    return (balanced_accuracy_score(y, pred_a) - balanced_accuracy_score(y, pred_b),
+            *np.percentile(diffs, [2.5, 97.5]))
+
+
+# (run name, query split) -> (queries' labels, k-NN predictions), for the paired
+# comparisons at the end.
+PREDICTIONS = {}
+
+
+def score(emb_by_cell, query='val', name=None):
+    """ The query-split metrics for one {cell_id: vector} embedding. The
+    labeled train cells are the database; the labeled cells of the `query`
+    split are the queries. `shared_metrics` adds the rest. """
     x_tr, y_tr, tr = cells_xy(emb_by_cell, 'train')
     x_va, y_va, va = cells_xy(emb_by_cell, query)
     k, retrieval_k = EVAL_CFG['knn_k'], EVAL_CFG['retrieval_k']
@@ -185,6 +218,8 @@ def score(emb_by_cell, query='val'):
     out = {'n_train': len(tr), f'n_{query}': len(va)}
     ranking, _ = rank_neighbors(x_va, x_tr)
     pred = knn_predict(ranking, y_tr, k)
+    if name is not None:
+        PREDICTIONS[(name, query)] = (y_va, pred)
     out[f'{k}nn_bal_acc'] = balanced_accuracy_score(y_va, pred)
     out[f'{k}nn_bal_acc_ci_lo'], out[f'{k}nn_bal_acc_ci_hi'] = bootstrap_ci(y_va, pred)
     out[f'{k}nn_acc'] = (pred == y_va).mean()
@@ -204,6 +239,15 @@ def score(emb_by_cell, query='val'):
     probe = LogisticRegression(max_iter=5000, class_weight='balanced')
     probe.fit(scaler.transform(x_tr), y_tr)
     out['linear_bal_acc'] = balanced_accuracy_score(y_va, probe.predict(scaler.transform(x_va)))
+    return out
+
+
+def shared_metrics(emb_by_cell):
+    """ The metrics that do not depend on the query split (computed once per
+    embedding): leave-one-out k-NN and the clustering scores, which always use
+    train + val, and the collapse diagnostic. """
+    k = EVAL_CFG['knn_k']
+    out = {}
 
     # Leave-one-out k-NN over every labeled train + val cell. The 10% val
     # split has only 0-3 queries for the rare types; this is the
@@ -231,6 +275,13 @@ def score(emb_by_cell, query='val'):
     eigval = np.linalg.eigvalsh(np.cov(raw - raw.mean(0), rowvar=False))[::-1]
     out['E_top10'] = eigval[:10].sum() / eigval.sum()
     return out
+
+
+def evaluate(emb_by_cell, name):
+    """ Fills results[query split][name] for every query split. """
+    shared = shared_metrics(emb_by_cell)
+    for split in QUERY_SPLITS:
+        results[split][name] = {**score(emb_by_cell, split, name), **shared}
 
 
 # %% [markdown]
@@ -267,7 +318,8 @@ features = np.concatenate([profiles / profiles.std(),
 baseline = dict(zip(all_ids, features))
 
 # results[query split][run name] -> metrics
-results = {split: {'depth-profile baseline': score(baseline, split)} for split in QUERY_SPLITS}
+results = {split: {} for split in QUERY_SPLITS}
+evaluate(baseline, 'depth-profile baseline')
 print(pd.Series(results['val']['depth-profile baseline']).round(3).to_string())
 
 
@@ -287,22 +339,26 @@ def load_run(ckpt_dir):
         config = json.load(f)
     config['data']['path'] = str(DATA_DIR)
 
-    model = create_giclmorph(config) if 'giclmorph' in config else create_graphdino(config)
     ckpt = max(ckpt_dir.glob('ckpt_*.pt'), key=lambda p: int(p.stem.split('_')[1]))
+    return config, ckpt
+
+
+def load_model(ckpt, config):
+    model = create_giclmorph(config) if 'giclmorph' in config else create_graphdino(config)
     model.load_state_dict(torch.load(ckpt, map_location=device))
-    return model.to(device).eval(), config, ckpt
+    return model.to(device).eval()
 
 
 @torch.no_grad()
-def embed(model, config, n_views):
+def embed(model, config, n_views, splits):
     eval_config = json.loads(json.dumps(config))
     eval_config['data'].update(n_drop_branch=0, jitter_var=0.0, translate_var=0.0,
                                rotation_axis=None)
     torch.manual_seed(0)
     out = {}
-    for split in SPLITS:
+    for split in splits:
         dataset = GraphDataset(eval_config, mode=split)
-        for i in range(len(dataset)):
+        for i in tqdm(range(len(dataset)), desc=f'embed {split}'):
             cell = dataset.cells[i]
             views = [dataset._augment(cell) for _ in range(n_views)]
             feat = torch.from_numpy(np.stack([f for f, _ in views])).float().to(device)
@@ -313,14 +369,33 @@ def embed(model, config, n_views):
     return out
 
 
+def embed_cached(ckpt_dir, ckpt, config, n_views):
+    """ Embeddings of every cell in `SPLITS`, cached per checkpoint in
+    `<ckpt_dir>/embeddings_<ckpt>.npy`. Only splits with cells missing from the
+    cache are (re)computed, so adding the test split later costs that split
+    only, and re-running on an unchanged checkpoint costs nothing. """
+    path = ckpt_dir / f'embeddings_{ckpt.stem}.npy'
+    cached = {}
+    if path.exists():
+        saved = np.load(path, allow_pickle=True).item()
+        if saved['n_views'] == n_views:
+            cached = saved['emb']
+    missing = [s for s in SPLITS if any(c not in cached for c in split_ids[s])]
+    if missing:
+        model = load_model(ckpt, config)
+        cached = {**cached, **embed(model, config, n_views, missing)}
+        np.save(path, {'n_views': n_views, 'emb': cached})
+    else:
+        print(f'  using cached embeddings from {path.name}')
+    return {c: cached[c] for c in all_ids}
+
+
 embeddings = {}
 for name, ckpt_dir in RUNS.items():
-    model, config, ckpt = load_run(ckpt_dir)
+    config, ckpt = load_run(ckpt_dir)
     print(f'{name}: {ckpt}')
-    embeddings[name] = embed(model, config, EVAL_CFG['n_eval_views'])
-    for split in QUERY_SPLITS:
-        results[split][name] = score(embeddings[name], split)
-    np.save(ckpt_dir / 'embeddings.npy', embeddings[name])
+    embeddings[name] = embed_cached(ckpt_dir, ckpt, config, N_VIEWS)
+    evaluate(embeddings[name], name)
 
 # %% [markdown]
 # #### Results
@@ -337,6 +412,31 @@ for split in QUERY_SPLITS:
     df_results.to_csv(DATA_DIR / f'eval_results_{split}.csv')
 df_results = pd.DataFrame(results['val']).T  # what the plots below refer to
 df_results.to_csv(DATA_DIR / 'eval_results.csv')
+
+# %% [markdown]
+# #### Paired differences
+#
+# Balanced accuracy of the first run minus the second on the *same* queries,
+# with a 95% interval over stratified resamples of those queries. Two separate
+# intervals overlap long before a paired difference is compatible with zero, so
+# this is the table to read when comparing runs; a difference whose interval
+# contains 0 is not a result.
+
+# %%
+names = list(results[QUERY_SPLITS[0]])
+rows = []
+for split in QUERY_SPLITS:
+    for a in names:
+        for b in names:
+            if a < b:
+                (y_a, pred_a), (y_b, pred_b) = PREDICTIONS[(a, split)], PREDICTIONS[(b, split)]
+                assert (y_a == y_b).all()
+                diff, lo, hi = paired_diff_ci(y_a, pred_a, pred_b)
+                rows.append({'split': split, 'a': a, 'b': b, 'a_minus_b': diff,
+                             'ci_lo': lo, 'ci_hi': hi, 'excludes_0': lo > 0 or hi < 0})
+df_paired = pd.DataFrame(rows)
+print(df_paired.round(3).to_string(index=False))
+df_paired.to_csv(DATA_DIR / 'eval_paired.csv', index=False)
 
 # %% [markdown]
 # #### t-SNE per run

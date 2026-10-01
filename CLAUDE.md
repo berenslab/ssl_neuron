@@ -35,7 +35,7 @@ Eyewire2 retina pipeline (`ssl_neuron/eyewire2/`, run in this numbered order) �
 6. `06_train_giclmorph.py` — trains GICLMorph (`config_giclmorph.json`, `GICLTrainer`); GPU. With `cmid_weight: 0` it is the like-for-like GraphDINO control.
 7. `07_evaluate_embeddings.py` — k-NN (also on consensus-labeled and `both_strong` queries alone, with a bootstrap CI, and leave-one-out over train+val) on val and, if `test_ids.npy` exists, on test / precision@k / linear-probe / clustering scores on celltype for every GraphDINO and GICLMorph run found, plus a no-learning depth-profile baseline; per-class recall, confusion matrices and example retrievals.
 
-`05`–`07` read the `GICLMORPH_CONFIG`, `GICLMORPH_DATA`, `GICLMORPH_CKPTS` environment variables to override their paths.
+`05`–`07` read the `GICLMORPH_CONFIG`, `GICLMORPH_DATA`, `GICLMORPH_CKPTS` environment variables to override their paths. `07` also reads `GICLMORPH_EVAL_RUNS` (`name=ckpt_dir;...`), `GICLMORPH_EVAL_VIEWS` (views per cell, default from the config) and `GICLMORPH_EVAL_TEST=1`, which is what loads, embeds and scores the frozen test split (off by default, so it isn't looked at while tuning). Embeddings are cached per checkpoint (`embeddings_<ckpt>.npy`), so a re-run only embeds what is new.
 
 On Windows, running `03`/`06`/`07` as plain scripts hangs in `GraphDataset.__init__`: its `multiprocessing.Manager()` is started under the `spawn` start method, the manager child fails to bootstrap from the unguarded script, and the parent waits forever. The scripts are meant for the Linux cluster (`fork`) or Jupyter, where this does not happen.
 
