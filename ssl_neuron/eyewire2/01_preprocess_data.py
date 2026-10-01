@@ -92,6 +92,7 @@ print(f"skeletons:  {SWC_DIR}")
 print(f"dataframe:  {DF_PATH}")
 
 VAL_FRACTION = 0.1
+TEST_FRACTION = 0.1
 SEED = 0
 
 # Metadata columns, as produced by eyewire2-datajoint's `prepare_manuscript_df.py`.
@@ -252,15 +253,24 @@ plot_neuron(sample_neighbors, sample_features)
 plt.show()
 
 # %% [markdown]
-# #### Train / val split
+# #### Train / val / test split
 #
-# For training, the validation set only produces a DINO loss curve (there are
-# no labels in the objective). But `07_evaluate_embeddings.py` uses the labeled
-# cells of `val_ids` as its k-NN queries, and with ~28 celltypes a plain random
-# 10% leaves many classes with 0-3 queries (`00_giclmorph_spec.md` section
-# 7.6). So the split is stratified by celltype, with the unlabeled cells as one
-# more stratum: every class gets its `VAL_FRACTION` share of val cells, and the
-# unlabeled cells are split as a random split would.
+# * **train** is what the SSL models are fit on.
+# * **val** only produces a DINO loss curve during training (there are no
+#   labels in the objective) and is what `07` scores while tuning.
+# * **test** is held out for the final GraphDINO vs GICLMorph comparison. It is
+#   **frozen**: once `test_ids.npy` exists it is reused as is, never redrawn,
+#   so a re-run of this script with a different cell selection cannot leak
+#   test cells into training. Delete the file by hand to draw a new one (and
+#   retrain everything).
+#
+# `07_evaluate_embeddings.py` uses the labeled cells of val/test as its k-NN
+# queries, and with ~35 scored celltypes a plain random 10% leaves the rare
+# ones with 0-3 queries (`00_giclmorph_spec.md` section 7.6). So every split is
+# stratified by celltype, with the unlabeled cells as one more stratum (types
+# without labels yet end up in all three splits): each class gets its
+# fraction of cells, and the unlabeled cells are split as a random split would.
+# The labels are not used for training, so this does not bias the SSL.
 
 # %%
 def stratified_split(strata, val_fraction, seed):
@@ -283,14 +293,33 @@ def stratified_split(strata, val_fraction, seed):
 celltype = df_cells["celltype_final"].where(
     df_cells.get("valid_celltype_final", pd.Series(True, index=df_cells.index))
     .fillna(False).astype(bool))
-train_ids, val_ids = stratified_split(celltype.fillna("<unlabeled>"), VAL_FRACTION, SEED)
+celltype.index = celltype.index.astype(str)
+strata = celltype.fillna("<unlabeled>")
+
+test_path = OUT_DIR / "test_ids.npy"
+if test_path.exists():
+    test_ids = np.load(test_path).astype(str)
+    gone = np.setdiff1d(test_ids, strata.index.to_numpy())
+    if len(gone):
+        print(f"WARNING: {len(gone)} frozen test cells are not in this run's selection "
+              f"and are left out of it (e.g. {gone[:3]}).")
+    test_ids = np.intersect1d(test_ids, strata.index.to_numpy())
+    rest_ids = np.setdiff1d(strata.index.to_numpy(), test_ids)
+    print(f"Reusing the frozen test split from {test_path}.")
+else:
+    rest_ids, test_ids = stratified_split(strata, TEST_FRACTION, SEED)
+    np.save(test_path, test_ids)
+    print(f"Drew a new test split and froze it in {test_path}.")
+
+# val is a VAL_FRACTION share of *all* cells, drawn from what is left.
+train_ids, val_ids = stratified_split(strata.loc[rest_ids], VAL_FRACTION / (1 - TEST_FRACTION), SEED)
 
 np.save(OUT_DIR / "train_ids.npy", train_ids)
 np.save(OUT_DIR / "val_ids.npy", val_ids)
 
-print(f"{len(train_ids)} train / {len(val_ids)} val skeletons written to {OUT_DIR}")
-n_val_labeled = int(celltype.reindex(val_ids).notna().sum())
-print(f"  {n_val_labeled} of the val cells are labeled (k-NN queries in 07), "
-      f"over {celltype.reindex(val_ids).nunique()} celltypes")
+print(f"{len(train_ids)} train / {len(val_ids)} val / {len(test_ids)} test skeletons written to {OUT_DIR}")
+for name, ids in (("val", val_ids), ("test", test_ids)):
+    print(f"  {celltype.reindex(ids).notna().sum()} of the {name} cells are labeled "
+          f"(k-NN queries in 07), over {celltype.reindex(ids).nunique()} celltypes")
 
 # %%

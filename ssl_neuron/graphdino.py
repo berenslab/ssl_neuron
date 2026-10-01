@@ -246,12 +246,45 @@ class GraphDINO(nn.Module):
         self.student_temp = student_temp
         self.teacher_temp = teacher_temp
 
+        # Detached diagnostics of the last `forward` (see `_distribution_stats`).
+        self._stats = []
+        self.last_stats = {}
+
     def compute_loss(self, teacher_logits, student_logits, eps = 1e-20):
         teacher_logits = teacher_logits.detach()
         student_probs = (student_logits / self.student_temp).softmax(dim = -1)
         teacher_probs = ((teacher_logits - self.teacher_centers) / self.teacher_temp).softmax(dim = -1)
         loss = - (teacher_probs * torch.log(student_probs + eps)).sum(dim = -1).mean()
+
+        with torch.no_grad():
+            self._stats.append(self._distribution_stats(teacher_probs, student_probs, loss.detach(), eps))
         return loss
+
+    @staticmethod
+    def _distribution_stats(teacher_probs, student_probs, loss, eps):
+        """ Collapse diagnostics for the DINO targets. The loss is a
+        cross-entropy, so it is bounded below by the teacher entropy and says
+        little on its own:
+
+        * `teacher_entropy` ~ ln(num_classes): uniform collapse (every cell
+          gets the same flat target); ~ 0: sharp targets.
+        * `marginal_entropy`, the entropy of the batch-mean teacher
+          distribution: ~ 0 means all cells pick the same prototype (one-hot
+          collapse); ~ ln(num_classes) means the prototypes are all in use.
+        * `kl` = loss - teacher_entropy: the part of the loss the student can
+          actually reduce.
+        """
+        def entropy(p):
+            return -(p * torch.log(p + eps)).sum(dim=-1)
+
+        teacher_entropy = entropy(teacher_probs).mean()
+        return {
+            'teacher_entropy': teacher_entropy,
+            'student_entropy': entropy(student_probs).mean(),
+            'marginal_entropy': entropy(teacher_probs.mean(dim=0)),
+            'teacher_max_prob': teacher_probs.max(dim=-1).values.mean(),
+            'kl': loss - teacher_entropy,
+        }
 
     def update_moving_average(self, decay=None):
         update_moving_average(self.teacher_ema_updater, self.teacher_encoder, self.student_encoder, decay=decay)
@@ -281,9 +314,11 @@ class GraphDINO(nn.Module):
         teacher_logits_avg = teacher_proj.mean(dim = 0)
         self.previous_centers.copy_(teacher_logits_avg)
 
+        self._stats = []
         loss1 = self.compute_loss(teacher_proj1, student_proj2)
         loss2 = self.compute_loss(teacher_proj2, student_proj1)
         loss = (loss1 + loss2) / 2
+        self.last_stats = {k: (self._stats[0][k] + self._stats[1][k]) / 2 for k in self._stats[0]}
 
         if return_student:
             return (loss,

@@ -54,13 +54,17 @@
         "name": "adamw",
         "lr": 0.0001,
         "weight_decay": 0.01,
-        "max_iter": 100000,
         "exp_decay": 0.5
     },
     "trainer": {
         "ckpt_dir": "./ckpts_giclmorph",
-        "save_ckpt_every": 50,
-        "seed": null
+        "epochs": 300,
+        "eval_every": 5,
+        "save_ckpt_every": 10,
+        "save_last_every": 5,
+        "grad_clip": 3.0,
+        "resume": false,
+        "seed": 0
     },
     "evaluation": {
         "n_eval_views": 5,

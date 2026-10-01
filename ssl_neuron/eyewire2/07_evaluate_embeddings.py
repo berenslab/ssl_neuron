@@ -26,6 +26,9 @@
 #   k-NN is the headline number (`00_dataset_spec.md` section 8). It is also
 #   reported on the consensus-labeled queries alone (`_consensus`), leaving out
 #   cells whose celltype was assigned by a classifier;
+# * the same k-NN as **leave-one-out** over every labeled cell (`_loo`): the
+#   10% val split leaves the rare types with only 0-3 queries each, so this
+#   is the lower-variance number for comparing runs;
 # * retrieval **precision@k** (`retrieval_k`): the share of a query's `retrieval_k`
 #   most similar train cells that share its celltype, macro over classes;
 # * the paper's clustering metrics on all labeled cells, using the celltype as
@@ -105,8 +108,12 @@ if f'valid_{LABEL_COLUMN}' in meta.columns:
     labeled &= meta[f'valid_{LABEL_COLUMN}'].fillna(False).astype(bool)
 labels = meta.loc[labeled, LABEL_COLUMN]
 
+# `test` is the frozen held-out split from 01 (absent in data preprocessed
+# before it existed). Tune on val; look at test only for the final comparison.
+SPLITS = [s for s in ('train', 'val', 'test') if (DATA_DIR / f'{s}_ids.npy').exists()]
+QUERY_SPLITS = [s for s in SPLITS if s != 'train']
 split_ids = {split: [str(c) for c in np.load(DATA_DIR / f'{split}_ids.npy')]
-             for split in ('train', 'val')}
+             for split in SPLITS}
 split_sets = {split: set(ids) for split, ids in split_ids.items()}
 train_counts = labels[labels.index.isin(split_ids['train'])].value_counts()
 CLASSES = sorted(train_counts[train_counts >= EVAL_CFG['min_cells_per_class']].index)
@@ -114,17 +121,22 @@ labels = labels[labels.isin(CLASSES)]
 print(f'{len(labels)} labeled cells over {len(CLASSES)} classes '
       f'({(train_counts < EVAL_CFG["min_cells_per_class"]).sum()} classes below '
       f'{EVAL_CFG["min_cells_per_class"]} train cells dropped); '
-      f'{labels.index.isin(split_ids["val"]).sum()} of them in val')
+      + ', '.join(f'{labels.index.isin(split_ids[s]).sum()} in {s}' for s in QUERY_SPLITS))
 
-# Labels assigned by a classifier rather than by human consensus; scored
-# separately (the `_consensus` column). A dataframe without the column counts
-# every label as consensus.
+# Labels assigned by a classifier rather than by human consensus are scored
+# separately (the `_consensus` column), and so are the labels both annotators
+# were sure of (`_strong`, the headline when labels are noisy). A dataframe
+# without the column counts every label as consensus and strong.
 if 'celltype_final_decision' in meta.columns:
-    consensus_mask = meta['celltype_final_decision'].reindex(labels.index) != 'classifier'
+    decision = meta['celltype_final_decision'].reindex(labels.index)
+    consensus_mask = decision != 'classifier'
+    strong_mask = decision == 'both_strong'
 else:
     consensus_mask = pd.Series(True, index=labels.index)
+    strong_mask = pd.Series(True, index=labels.index)
 print(f'{int((~consensus_mask).sum())} of the labeled cells carry a classifier-assigned '
-      f'label ({int((~consensus_mask[consensus_mask.index.isin(split_ids["val"])]).sum())} in val)')
+      f'label ({int((~consensus_mask[consensus_mask.index.isin(split_ids["val"])]).sum())} in val); '
+      f'{int(strong_mask.sum())} are both_strong')
 
 
 # %% [markdown]
@@ -145,30 +157,44 @@ def knn_predict(ranking, database_labels, k):
     return np.array([pd.Series(row).mode().iloc[0] for row in votes])
 
 
-def split_xy(emb_by_cell):
-    """ Labeled train cells (the database) and labeled val cells (the queries). """
-    tr = [c for c in labels.index if c in split_sets['train'] and c in emb_by_cell]
-    va = [c for c in labels.index if c in split_sets['val'] and c in emb_by_cell]
-    x_tr = np.stack([emb_by_cell[c] for c in tr])
-    x_va = np.stack([emb_by_cell[c] for c in va])
-    return x_tr, labels[tr].to_numpy(), x_va, labels[va].to_numpy(), tr, va
+def cells_xy(emb_by_cell, *splits):
+    """ Labeled cells of the given splits: embeddings, labels, cell ids. """
+    cells = [c for c in labels.index if c in emb_by_cell and any(c in split_sets[s] for s in splits)]
+    return np.stack([emb_by_cell[c] for c in cells]), labels[cells].to_numpy(), cells
 
 
-def score(emb_by_cell):
-    """ All metrics for one {cell_id: vector} embedding. """
-    x_tr, y_tr, x_va, y_va, tr, va = split_xy(emb_by_cell)
+def bootstrap_ci(y, pred, n=1000, seed=0):
+    """ 95% interval of the balanced accuracy over resampled queries. """
+    rng = np.random.default_rng(seed)
+    scores = []
+    for _ in range(n):
+        idx = rng.integers(0, len(y), len(y))
+        scores.append(balanced_accuracy_score(y[idx], pred[idx]))
+    return np.percentile(scores, [2.5, 97.5])
+
+
+def score(emb_by_cell, query='val'):
+    """ All metrics for one {cell_id: vector} embedding. The labeled train
+    cells are the database; the labeled cells of the `query` split are the
+    queries. The leave-one-out and clustering scores always use train + val, so
+    the test split is only ever touched through `query='test'`. """
+    x_tr, y_tr, tr = cells_xy(emb_by_cell, 'train')
+    x_va, y_va, va = cells_xy(emb_by_cell, query)
     k, retrieval_k = EVAL_CFG['knn_k'], EVAL_CFG['retrieval_k']
 
-    out = {'n_train': len(tr), 'n_val': len(va)}
+    out = {'n_train': len(tr), f'n_{query}': len(va)}
     ranking, _ = rank_neighbors(x_va, x_tr)
     pred = knn_predict(ranking, y_tr, k)
     out[f'{k}nn_bal_acc'] = balanced_accuracy_score(y_va, pred)
+    out[f'{k}nn_bal_acc_ci_lo'], out[f'{k}nn_bal_acc_ci_hi'] = bootstrap_ci(y_va, pred)
     out[f'{k}nn_acc'] = (pred == y_va).mean()
     # The same k-NN, scored only on queries whose label is a human consensus
-    # (00_dataset_spec.md section 8). The database keeps every label.
-    consensus = consensus_mask.reindex(va).to_numpy()
-    out[f'{k}nn_bal_acc_consensus'] = (balanced_accuracy_score(y_va[consensus], pred[consensus])
-                                       if consensus.any() else np.nan)
+    # (00_dataset_spec.md section 8), and only on both_strong ones. The
+    # database keeps every label.
+    for suffix, mask in (('consensus', consensus_mask), ('strong', strong_mask)):
+        keep = mask.reindex(va).to_numpy()
+        out[f'{k}nn_bal_acc_{suffix}'] = (balanced_accuracy_score(y_va[keep], pred[keep])
+                                          if keep.any() else np.nan)
     # Retrieval: of the `retrieval_k` most similar train cells, the share of the
     # query's celltype, macro-averaged over classes.
     hits = (y_tr[ranking[:, :retrieval_k]] == y_va[:, None]).mean(axis=1)
@@ -179,8 +205,23 @@ def score(emb_by_cell):
     probe.fit(scaler.transform(x_tr), y_tr)
     out['linear_bal_acc'] = balanced_accuracy_score(y_va, probe.predict(scaler.transform(x_va)))
 
-    x_all = StandardScaler().fit_transform(np.concatenate([x_tr, x_va]))
-    y_all = np.concatenate([y_tr, y_va])
+    # Leave-one-out k-NN over every labeled train + val cell. The 10% val
+    # split has only 0-3 queries for the rare types; this is the
+    # lower-variance number for comparing runs while tuning. Labels never
+    # enter SSL training, so scoring the cells it was trained on is fair, but
+    # the query split above is the strictly held-out check.
+    x_lab, y_lab, lab_cells = cells_xy(emb_by_cell, 'train', 'val')
+    _, similarity = rank_neighbors(x_lab, x_lab)
+    np.fill_diagonal(similarity, -np.inf)
+    pred_loo = knn_predict(np.argsort(-similarity, axis=1), y_lab, k)
+    out['n_loo'] = len(y_lab)
+    out[f'{k}nn_loo_bal_acc'] = balanced_accuracy_score(y_lab, pred_loo)
+    consensus_lab = consensus_mask.reindex(lab_cells).to_numpy()
+    out[f'{k}nn_loo_bal_acc_consensus'] = (balanced_accuracy_score(y_lab[consensus_lab], pred_loo[consensus_lab])
+                                           if consensus_lab.any() else np.nan)
+
+    x_all = StandardScaler().fit_transform(x_lab)
+    y_all = y_lab
     out['SC'] = silhouette_score(x_all, y_all)
     out['DBI'] = davies_bouldin_score(x_all, y_all)
     kmeans = KMeans(n_clusters=len(CLASSES), n_init=10, random_state=0).fit(x_all)
@@ -205,7 +246,7 @@ def load_positions(cell_id):
     return np.load(DATA_DIR / 'skeletons' / cell_id / 'features.npy')[:, :3]
 
 
-all_ids = split_ids['train'] + split_ids['val']
+all_ids = [c for split in SPLITS for c in split_ids[split]]
 depth_lo, depth_hi = np.percentile(
     np.concatenate([load_positions(c)[::20, 2] for c in all_ids]), [0.5, 99.5])
 bins = np.linspace(depth_lo, depth_hi, 31)
@@ -225,8 +266,9 @@ features = np.concatenate([profiles / profiles.std(),
                            (sizes - sizes.mean(0)) / sizes.std(0)], axis=1)
 baseline = dict(zip(all_ids, features))
 
-results = {'depth-profile baseline': score(baseline)}
-print(pd.Series(results['depth-profile baseline']).round(3).to_string())
+# results[query split][run name] -> metrics
+results = {split: {'depth-profile baseline': score(baseline, split)} for split in QUERY_SPLITS}
+print(pd.Series(results['val']['depth-profile baseline']).round(3).to_string())
 
 
 # %% [markdown]
@@ -258,7 +300,7 @@ def embed(model, config, n_views):
                                rotation_axis=None)
     torch.manual_seed(0)
     out = {}
-    for split in ('train', 'val'):
+    for split in SPLITS:
         dataset = GraphDataset(eval_config, mode=split)
         for i in range(len(dataset)):
             cell = dataset.cells[i]
@@ -276,7 +318,8 @@ for name, ckpt_dir in RUNS.items():
     model, config, ckpt = load_run(ckpt_dir)
     print(f'{name}: {ckpt}')
     embeddings[name] = embed(model, config, EVAL_CFG['n_eval_views'])
-    results[name] = score(embeddings[name])
+    for split in QUERY_SPLITS:
+        results[split][name] = score(embeddings[name], split)
     np.save(ckpt_dir / 'embeddings.npy', embeddings[name])
 
 # %% [markdown]
@@ -285,9 +328,14 @@ for name, ckpt_dir in RUNS.items():
 # Chance balanced accuracy is 1 / n_classes.
 
 # %%
-df_results = pd.DataFrame(results).T
 print(f'{len(CLASSES)} classes, chance balanced accuracy {1 / len(CLASSES):.3f}')
-print(df_results.round(3).to_string())
+for split in QUERY_SPLITS:
+    held_out = '  (held out: use for the final comparison only)' if split == 'test' else ''
+    print(f'\n--- queries: {split} ---{held_out}')
+    df_results = pd.DataFrame(results[split]).T
+    print(df_results.round(3).to_string())
+    df_results.to_csv(DATA_DIR / f'eval_results_{split}.csv')
+df_results = pd.DataFrame(results['val']).T  # what the plots below refer to
 df_results.to_csv(DATA_DIR / 'eval_results.csv')
 
 # %% [markdown]

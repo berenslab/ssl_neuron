@@ -42,7 +42,7 @@ import torch
 
 from ssl_neuron.eyewire2.dataset import build_giclmorph_dataloader
 from ssl_neuron.giclmorph import create_model
-from ssl_neuron.train import GICLTrainer
+from ssl_neuron.train import GICLTrainer, set_seed
 
 # %% [markdown]
 # #### Config
@@ -62,13 +62,10 @@ config['trainer']['ckpt_dir'] = str(Path(os.environ.get(
     'GICLMORPH_CKPTS', THIS_DIR / config['trainer']['ckpt_dir'])))
 Path(config['trainer']['ckpt_dir']).mkdir(parents=True, exist_ok=True)
 
-# Keep the config next to the checkpoints, so 07 evaluates with the settings
-# the run actually used.
-with open(Path(config['trainer']['ckpt_dir']) / 'config.json', 'w') as f:
-    json.dump(config, f, indent=4)
-
-if config['trainer'].get('seed') is not None:
-    torch.manual_seed(config['trainer']['seed'])
+# The trainer keeps the config (`config.json`, which 07 reads), `run_info.json`
+# and `metrics.csv` next to the checkpoints. `trainer.resume` continues from
+# `last.pt`.
+set_seed(config['trainer'].get('seed'))
 
 print(f'config: {CONFIG_PATH}')
 print(f'data:   {config["data"]["path"]}')
@@ -111,10 +108,6 @@ print(f'device {device}; student graph encoder {n_graph / 1e3:.0f}k params, '
 dataloaders = build_giclmorph_dataloader(config)
 
 train_loader, val_loader = dataloaders
-print(f'{len(train_loader.dataset)} train / {len(val_loader.dataset)} val cells, '
-      f'{len(train_loader)} iterations per epoch')
-print(f'max_iter={config["optimizer"]["max_iter"]} '
-      f'(~{config["optimizer"]["max_iter"] // max(len(train_loader), 1)} epochs)')
 
 # %% [markdown]
 # #### Run training

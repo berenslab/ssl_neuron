@@ -45,13 +45,19 @@
         }
     },
     "optimizer": {
+        "name": "adamw",
         "lr": 0.0001,
-        "max_iter": 5000,
+        "weight_decay": 0.01,
         "exp_decay": 0.5
     },
     "trainer": {
         "ckpt_dir": "./ckpts",
-        "save_ckpt_every": 50,
-        "seed": null
+        "epochs": 300,
+        "eval_every": 5,
+        "save_ckpt_every": 10,
+        "save_last_every": 5,
+        "grad_clip": 3.0,
+        "resume": false,
+        "seed": 0
     }
 }

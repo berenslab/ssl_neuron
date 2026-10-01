@@ -43,7 +43,7 @@ from pathlib import Path
 
 from ssl_neuron.eyewire2.dataset import build_dataloader
 from ssl_neuron.graphdino import create_model
-from ssl_neuron.train import Trainer
+from ssl_neuron.train import Trainer, set_seed
 
 # %% [markdown]
 # #### Load config
@@ -61,10 +61,14 @@ config["data"]["path"] = str(THIS_DIR / "data")
 config["trainer"]["ckpt_dir"] = str(THIS_DIR / "ckpts")
 Path(config["trainer"]["ckpt_dir"]).mkdir(parents=True, exist_ok=True)
 
+# The trainer writes `config.json`, `run_info.json` and `metrics.csv` next to
+# the checkpoints. Set `trainer.resume` to continue from `last.pt`.
+
 # %% [markdown]
 # #### Load model
 
 # %%
+set_seed(config["trainer"].get("seed"))  # before the model, for a reproducible init
 model = create_model(config)
 model.train()
 model.cuda()
@@ -78,8 +82,6 @@ dataloaders = build_dataloader(config)
 train_loader, val_loader = dataloaders
 print(f"{len(train_loader.dataset)} train / {len(val_loader.dataset)} val cells, "
       f"{len(train_loader)} iterations per epoch")
-print(f"max_iter={config['optimizer']['max_iter']} "
-      f"(~{config['optimizer']['max_iter'] // max(len(train_loader), 1)} epochs)")
 
 # %% [markdown]
 # #### Run training

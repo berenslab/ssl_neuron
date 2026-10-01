@@ -144,12 +144,16 @@ class GICLMorph(nn.Module):
     def update_moving_average(self, decay=None):
         self.dino.update_moving_average(decay=decay)
 
-    def forward(self, node_feat1, node_feat2, adj1, adj2, lapl1, lapl2, images):
-        """ Returns the total loss and a dict of its detached parts. """
+    def forward(self, node_feat1, node_feat2, adj1, adj2, lapl1, lapl2, images,
+                return_embedding=False):
+        """ Returns the total loss and a dict of its detached parts; with
+        `return_embedding=True` also the detached student CLS embedding of
+        view 1, as a third element. """
         imid, (emb1, _), (proj1, _) = self.dino(node_feat1, node_feat2, adj1, adj2,
                                                 lapl1, lapl2, return_student=True)
+        extra = (emb1.detach(),) if return_embedding else ()
         if not self.cmid_weight:
-            return imid, {'imid': imid.detach(), 'cmid': torch.zeros_like(imid).detach()}
+            return (imid, {'imid': imid.detach(), 'cmid': torch.zeros_like(imid).detach()}) + extra
 
         # The paper aligns view 1 (z_i^{t1}); view 2 only enters through IMID.
         z = proj1 if self.graph_head is None else self.graph_head(emb1)
@@ -157,7 +161,7 @@ class GICLMorph(nn.Module):
         cmid = cmid_loss(z, h, temperature=self.cmid_temp)
 
         loss = imid + self.cmid_weight * cmid
-        return loss, {'imid': imid.detach(), 'cmid': cmid.detach()}
+        return (loss, {'imid': imid.detach(), 'cmid': cmid.detach()}) + extra
 
 
 def create_model(config):

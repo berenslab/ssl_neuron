@@ -217,11 +217,16 @@ def build_dataloader(config, use_cuda=torch.cuda.is_available(), dataset_cls=Gra
 
     val_dataset = dataset_cls(config, mode='val')
     batch_size = val_dataset.num_samples if val_dataset.__len__() < config['data']['batch_size'] else config['data']['batch_size']
+    # Fresh workers and a seeded generator for every pass over the val loader
+    # (the trainer reseeds the generator), so the val augmentations -- and with
+    # them the val loss -- are the same at every evaluation.
+    val_kwargs = dict(kwargs, persistent_workers=False) if kwargs else {}
     val_loader = DataLoader(
             val_dataset,
             batch_size=batch_size,
             shuffle=False,
             drop_last=True,
-            **kwargs)
+            generator=torch.Generator().manual_seed(0),
+            **val_kwargs)
 
     return train_loader, val_loader
