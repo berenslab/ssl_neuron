@@ -177,6 +177,14 @@ def cells_xy(emb_by_cell, *splits):
     return np.stack([emb_by_cell[c] for c in cells]), labels[cells].to_numpy(), cells
 
 
+def split_xy(emb_by_cell, query='val'):
+    """ Labeled train cells (the database) and labeled `query` cells (the
+    queries), as (x_train, y_train, x_query, y_query, train ids, query ids). """
+    x_tr, y_tr, tr = cells_xy(emb_by_cell, 'train')
+    x_q, y_q, q = cells_xy(emb_by_cell, query)
+    return x_tr, y_tr, x_q, y_q, tr, q
+
+
 def stratified_resamples(y, n=1000, seed=0):
     """ `n` index sets that resample the queries *within each class*. A plain
     bootstrap drops the rare, hard classes from many resamples, and balanced
