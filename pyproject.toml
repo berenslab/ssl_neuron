@@ -31,11 +31,23 @@ dependencies = [
 [project.optional-dependencies]
 # GPU training/inference stack.
 torch = [
-    "torch>=2.3",
-    "torchvision>=0.18",
+    # <2.10: torch 2.10+ wheels drop Pascal (sm_61, e.g. the cluster's TITAN Xp) kernels.
+    "torch>=2.3,<2.10",
+    "torchvision>=0.18,<0.25",
     "scikit-learn>=1.4",
     "scipy",
 ]
+
+# CUDA 12.6 wheels: the last build line that still ships sm_61 kernels, and it runs on
+# drivers that only support CUDA 12.8 (the default PyPI wheel needs a newer driver).
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu126", extra = "torch", marker = "sys_platform != 'darwin'" }]
+torchvision = [{ index = "pytorch-cu126", extra = "torch", marker = "sys_platform != 'darwin'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
 # Note: the original Allen Cell Types Database preprocessing (extract_allen_data.ipynb)
 # additionally needs `allensdk` and `pandas`. It's not declared as an extra here because
 # allensdk's own old pins (e.g. matplotlib<3.5) would drag those versions into the single
