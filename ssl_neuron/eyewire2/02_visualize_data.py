@@ -48,7 +48,6 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
 
-from ssl_neuron.utils import plot_neuron
 from ssl_neuron.eyewire2.augment import augment_positions, random_crop_xy
 
 # %% [markdown]
@@ -102,7 +101,7 @@ def edge_array(neighbors):
 
 
 def plot_skeleton(ax, features, neighbors, ax1=0, ax2=1, color="tab:blue"):
-    """ `plot_neuron`, but one LineCollection instead of one `plot` call per
+    """ `ssl_neuron.utils.plot_neuron`, but one LineCollection instead of one `plot` call per
     edge (fast enough for full-size skeletons), and without resetting the axis
     limits, so several cells can share them. """
     edges = edge_array(neighbors)
@@ -378,16 +377,55 @@ plt.show()
 # Two independently augmented views of the same cell, using the `augment`
 # block from `config.json`. In xy the arbor should rotate (and sometimes
 # mirror) rigidly; in xz it should stay put in depth.
+#
+# The views are subsampled to `n_nodes` *before* augmenting, as in training:
+# the skeletons on disk have ~0.5 µm edges, so the per-node jitter (σ ≈ 1 µm)
+# would turn the full-resolution arbor into noise, while after subsampling the
+# edges are several µm long and the same jitter is a mild wiggle.
+
 
 # %%
+def subsample_graph_np(neighbors, keep_nodes, protected=(0,), rng=None):
+    """ Numpy port of `ssl_neuron.utils.subsample_graph` (which needs torch):
+    remove random degree-1/2 non-protected nodes, bridging over degree-2 ones,
+    until `keep_nodes` remain. Returns (neighbors, kept node ids). """
+    rng = np.random.default_rng(rng)
+    neighbors = {k: set(v) for k, v in neighbors.items()}
+    protected = set(protected)
+    while len(neighbors) > keep_nodes:
+        for idx in rng.permutation(list(neighbors)):
+            if len(neighbors) <= keep_nodes:
+                break
+            nbrs = neighbors.get(idx)
+            if nbrs is None or len(nbrs) >= 3 or idx in protected:
+                continue
+            if len(nbrs) == 2:
+                n1, n2 = nbrs
+                neighbors[n1].add(n2)
+                neighbors[n2].add(n1)
+            for n in nbrs:
+                neighbors[n].discard(idx)
+            del neighbors[idx]
+    return neighbors, np.array(sorted(neighbors))
+
+
 aug_kwargs = config["data"]["augment"]
 features, neighbors = load_cell(cell_ids[0])
 
 fig, axes = plt.subplots(2, 3, figsize=(12, 7))
 for col, title in enumerate(["original", "view 1", "view 2"]):
-    pos = features if col == 0 else augment_positions(features, **aug_kwargs)
-    plot_neuron(neighbors, pos, ax1=0, ax2=1, ax=axes[0, col])
-    plot_neuron(neighbors, pos, ax1=0, ax2=2, ax=axes[1, col])
+    if col == 0:
+        pos, nbrs = features[:, :3], neighbors
+    else:
+        nbrs, kept = subsample_graph_np(neighbors, config["data"]["n_nodes"])
+        pos = np.zeros((len(features), 3), dtype=features.dtype)
+        pos[kept] = augment_positions(features[kept, :3], **aug_kwargs)
+        title = f"{title} ({len(kept)} nodes)"
+    for row, ax2 in enumerate([1, 2]):
+        ax = axes[row, col]
+        plot_skeleton(ax, pos, nbrs, ax1=0, ax2=ax2, color="#334")
+        ax.set_aspect("equal")
+        ax.autoscale_view()
     axes[0, col].set_title(title)
 
 axes[0, 0].set_ylabel("y")
