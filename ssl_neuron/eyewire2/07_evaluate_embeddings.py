@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.19.4
+#       jupytext_version: 1.19.5
 #   kernelspec:
 #     display_name: ssl_neuron
 #     language: python
@@ -477,6 +477,7 @@ for name, emb in embeddings.items():
     plt.tight_layout()
     plt.show()
 
+
 # %% [markdown]
 # #### Per-class k-NN recall
 #
@@ -485,6 +486,19 @@ for name, emb in embeddings.items():
 # types right shows up as bars falling off to the right. The baseline is in the
 # same plot: the classes where a run beats it are the ones where it learned
 # something beyond depth profile and field size.
+
+# %%
+
+def split_xy(emb_by_cell, query='val'):
+    """ Labeled train cells (the database) and labeled `query` cells (the
+    queries), as (x_train, y_train, x_query, y_query, train ids, query ids). """
+    x_tr, y_tr, tr = cells_xy(emb_by_cell, 'train')
+    x_q, y_q, q = cells_xy(emb_by_cell, query)
+    return x_tr, y_tr, x_q, y_q, tr, q
+
+
+
+# %%
 
 # %%
 by_run = {'depth-profile baseline': baseline, **embeddings}
@@ -497,7 +511,7 @@ for name, emb in by_run.items():
 recall = pd.DataFrame(recall)
 n_queries = labels[labels.index.isin(split_sets['val'])].value_counts().reindex(order).fillna(0)
 
-fig, ax = plt.subplots(figsize=(max(8, 0.3 * len(order)), 4))
+fig, ax = plt.subplots(figsize=(max(8, 0.3 * len(order)), 5))
 width = 0.8 / len(recall.columns)
 for i, name in enumerate(recall.columns):
     ax.bar(np.arange(len(order)) + (i - (len(recall.columns) - 1) / 2) * width,

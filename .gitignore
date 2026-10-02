@@ -4,6 +4,9 @@
 **/.ipynb_checkpoints/
 .venv/
 
+*.npy
+*.pt
+
 ssl_neuron/data/skeletons/
 ssl_neuron/data/cell_types/
 

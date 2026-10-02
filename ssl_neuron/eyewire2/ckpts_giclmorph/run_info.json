@@ -1,0 +1,25 @@
+{
+    "resumed": [],
+    "started": "2026-10-02T09:30:38",
+    "command": [
+        "/gpfs01/berens/user/joesterle/github/eyewire2/ssl_neuron/.venv/lib/python3.13/site-packages/ipykernel_launcher.py",
+        "-f",
+        "/gpfs01/berens/user/joesterle/.local/share/jupyter/runtime/kernel-f499b12d-63f0-46ae-8088-70b50835b12f.json"
+    ],
+    "host": "joesterle_GPU0-dl_gber1",
+    "git": {
+        "commit": "15ff18d6019ef7d76c8294ab35da1fecd56dc899",
+        "branch": "eyewire2-preprocessing",
+        "dirty": true
+    },
+    "seed": 0,
+    "torch": "2.9.1+cu126",
+    "cuda": "12.6",
+    "gpu": "NVIDIA TITAN Xp",
+    "n_train": 2952,
+    "n_val": 369,
+    "iters_per_epoch": 184,
+    "max_iter": 55200,
+    "ln_num_classes": 6.907755278982137,
+    "trainable_params": 25502526
+}
